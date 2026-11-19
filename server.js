@@ -41,10 +41,11 @@ const one = async (sql, args = []) => (await all(sql, args))[0];
 const run = (sql, args = []) => db.execute({ sql, args });
 
 const SCHEMA = [
-  'CREATE TABLE IF NOT EXISTS admins(id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, hash TEXT NOT NULL)',
+  `CREATE TABLE IF NOT EXISTS admins(id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'teacher',
+    name TEXT NOT NULL DEFAULT '', disabled INTEGER NOT NULL DEFAULT 0, created_at INTEGER)`,
   `CREATE TABLE IF NOT EXISTS exams(id INTEGER PRIMARY KEY, title TEXT NOT NULL, subject TEXT DEFAULT '', instructions TEXT DEFAULT '',
     code TEXT UNIQUE NOT NULL, duration INTEGER NOT NULL, pass_marks REAL NOT NULL DEFAULT 0, start_at INTEGER, end_at INTEGER,
-    published INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)`,
+    published INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, owner_id INTEGER)`,
   `CREATE TABLE IF NOT EXISTS questions(id INTEGER PRIMARY KEY, exam_id INTEGER NOT NULL, pos INTEGER NOT NULL, type TEXT NOT NULL,
     text TEXT NOT NULL, options TEXT, answer TEXT DEFAULT '', marks REAL NOT NULL DEFAULT 1, explanation TEXT DEFAULT '')`,
   `CREATE TABLE IF NOT EXISTS attempts(id INTEGER PRIMARY KEY, exam_id INTEGER NOT NULL, name TEXT NOT NULL, name_key TEXT NOT NULL,
@@ -60,6 +61,17 @@ function init() {
   if (CONFIG_ERROR) return Promise.reject(err(503, CONFIG_ERROR));
   ready = ready || (async () => {
     await db.batch(SCHEMA, 'write');
+    // upgrade databases created before teacher accounts existed
+    const addCol = async (t, c, def) => {
+      const have = (await all(`PRAGMA table_info(${t})`)).map((r) => r.name);
+      if (!have.includes(c)) { try { await run(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`); } catch (e) { if (!/duplicate column/i.test(String(e.message))) throw e; } }
+    };
+    await addCol('admins', 'role', "TEXT NOT NULL DEFAULT 'teacher'");
+    await addCol('admins', 'name', "TEXT NOT NULL DEFAULT ''");
+    await addCol('admins', 'disabled', 'INTEGER NOT NULL DEFAULT 0');
+    await addCol('admins', 'created_at', 'INTEGER');
+    await addCol('exams', 'owner_id', 'INTEGER');
+    await run('CREATE INDEX IF NOT EXISTS idx_e_owner ON exams(owner_id)');
     if (!(await one('SELECT 1 x FROM admins'))) {
       const u = process.env.ADMIN_USERNAME || 'admin';
       let p = process.env.ADMIN_PASSWORD;
@@ -68,8 +80,12 @@ function init() {
         p = crypto.randomBytes(6).toString('hex');
         console.log(`Admin account created → username: ${u}  password: ${p}`);
       } else console.log(`Admin account created → username: ${u}`);
-      await run('INSERT INTO admins(username,hash) VALUES(?,?)', [u, bcrypt.hashSync(p, 12)]);
+      await run("INSERT INTO admins(username,hash,role,name,created_at) VALUES(?,?,'superadmin','Main administrator',?)", [u, bcrypt.hashSync(p, 12), now()]);
     }
+    await db.batch([
+      "UPDATE admins SET role='superadmin' WHERE id=(SELECT MIN(id) FROM admins) AND NOT EXISTS (SELECT 1 FROM admins WHERE role='superadmin')",
+      "UPDATE exams SET owner_id=(SELECT id FROM admins WHERE role='superadmin' ORDER BY id LIMIT 1) WHERE owner_id IS NULL",
+    ], 'write');
   })().catch((e) => { ready = null; throw e; });
   return ready;
 }
@@ -126,7 +142,7 @@ function cleanQs(list) {
     return { type, text: text.slice(0, 2000), options: options && JSON.stringify(options), answer, marks, explanation: String(q.explanation || '').trim().slice(0, 1000) };
   });
 }
-async function saveExam(id, b) {
+async function saveExam(id, b, ownerId) {
   const e = cleanExam(b);
   const qs = b.questions !== undefined ? cleanQs(b.questions) : null;
   const total = qs ? qs.reduce((t, q) => t + q.marks, 0) : id !== null ? await totalMarks(id) : 0;
@@ -136,9 +152,9 @@ async function saveExam(id, b) {
   let code = null;
   if (id === null) {
     code = await genCode();
-    stmts.push({ sql: 'INSERT INTO exams(title,subject,instructions,code,duration,pass_marks,start_at,end_at,published,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)', args: [e.title, e.subject, e.instructions, code, e.duration, e.pass_marks, e.start_at, e.end_at, e.published, now()] });
+    stmts.push({ sql: 'INSERT INTO exams(title,subject,instructions,code,duration,pass_marks,start_at,end_at,published,created_at,owner_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)', args: [e.title, e.subject, e.instructions, code, e.duration, e.pass_marks, e.start_at, e.end_at, e.published, now(), ownerId] });
   } else {
-    if (!(await one('SELECT 1 x FROM exams WHERE id=?', [id]))) throw err(404, 'Exam not found.');
+    if (!(await one('SELECT 1 x FROM exams WHERE id=? AND owner_id=?', [id, ownerId]))) throw err(404, 'Exam not found.');
     stmts.push({ sql: 'UPDATE exams SET title=?,subject=?,instructions=?,duration=?,pass_marks=?,start_at=?,end_at=?,published=? WHERE id=?', args: [e.title, e.subject, e.instructions, e.duration, e.pass_marks, e.start_at, e.end_at, e.published, id] });
   }
   if (qs) {
@@ -154,6 +170,7 @@ async function saveExam(id, b) {
   await db.batch(stmts, 'write');
   return one(id === null ? 'SELECT id,code FROM exams WHERE code=?' : 'SELECT id,code FROM exams WHERE id=?', [id === null ? code : id]);
 }
+const ownAttempt = (id, adminId) => one('SELECT a.* FROM attempts a JOIN exams e ON e.id=a.exam_id WHERE a.id=? AND e.owner_id=?', [id, adminId]);
 const examState = (e) => (!e.published ? 'draft' : e.start_at && e.start_at > now() ? 'scheduled' : e.end_at && now() > e.end_at ? 'closed' : 'open');
 
 /* ---------- grading ---------- */
@@ -181,11 +198,11 @@ const mkSummary = (r) => {
   const status = !r.submitted_at ? 'In progress' : pending ? 'Pending review' : r.score >= r.pass_marks ? 'Pass' : 'Fail';
   return { id: r.id, name: r.name, exam: r.exam, examId: r.exam_id, score: r.score, total: r.total, pct: r.total ? Math.round((r.score / r.total) * 1000) / 10 : 0, pending, status, passMarks: r.pass_marks, startedAt: r.started_at, submittedAt: r.submitted_at, auto: !!r.auto };
 };
-const summaries = async (where = '', args = []) => (await all(`SELECT a.id, a.exam_id, a.name, a.started_at, a.submitted_at, a.auto, e.title exam, e.pass_marks,
+const summaries = async (conds = [], args = []) => (await all(`SELECT a.id, a.exam_id, a.name, a.started_at, a.submitted_at, a.auto, e.title exam, e.pass_marks,
   (SELECT COALESCE(SUM(marks),0) FROM questions WHERE exam_id=a.exam_id) total,
   (SELECT COALESCE(SUM(awarded),0) FROM answers WHERE attempt_id=a.id) score,
   (SELECT COUNT(*) FROM answers WHERE attempt_id=a.id AND awarded IS NULL) pending
-  FROM attempts a JOIN exams e ON e.id=a.exam_id ${where} ORDER BY a.id DESC`, args)).map(mkSummary);
+  FROM attempts a JOIN exams e ON e.id=a.exam_id ${conds.length ? 'WHERE ' + conds.join(' AND ') : ''} ORDER BY a.id DESC`, args)).map(mkSummary);
 async function review(a) {
   return (await all('SELECT q.*, an.response, an.awarded FROM questions q LEFT JOIN answers an ON an.question_id=q.id AND an.attempt_id=? WHERE q.exam_id=? ORDER BY q.pos', [a.id, a.exam_id]))
     .map(parseQ).map((q) => ({
@@ -510,19 +527,67 @@ app.post('/api/student/submit', studentAuth, wrap(async (req, res) => {
 }));
 app.get('/api/student/result', studentAuth, wrap(async (req, res) => {
   if (!req.attempt.submitted_at) throw err(409, 'Exam not submitted yet.');
-  res.json({ ...(await summaries('WHERE a.id=?', [req.attempt.id]))[0], review: await review(req.attempt) });
+  res.json({ ...(await summaries(['a.id=?'], [req.attempt.id]))[0], review: await review(req.attempt) });
 }));
 
 /* ----- admin ----- */
 app.post('/api/admin/login', loginLimiter, wrap(async (req, res) => {
-  const u = await one('SELECT * FROM admins WHERE username=?', [String(req.data.username || '').trim()]);
+  const u = await one('SELECT * FROM admins WHERE lower(username)=lower(?)', [String(req.data.username || '').trim()]);
   if (!u || !bcrypt.compareSync(String(req.data.password || ''), u.hash)) throw err(401, 'Incorrect username or password.');
-  res.json({ token: jwt.sign({ id: u.id, u: u.username }, SECRET, { expiresIn: '8h' }), username: u.username });
+  if (u.disabled) throw err(403, 'This account has been disabled. Contact the main administrator.');
+  res.json({ token: jwt.sign({ id: u.id }, SECRET, { expiresIn: '8h' }), username: u.username, name: u.name, role: u.role });
 }));
-app.use('/api/admin', (req, res, next) => {
-  try { req.admin = jwt.verify((req.get('authorization') || '').replace(/^Bearer /, ''), SECRET); next(); }
-  catch { next(err(401, 'Please sign in again.')); }
-});
+// Every admin request is checked against the database, so disabled or deleted teachers lose access immediately.
+app.use('/api/admin', wrap(async (req, res, next) => {
+  let payload;
+  try { payload = jwt.verify((req.get('authorization') || '').replace(/^Bearer /, ''), SECRET); } catch { throw err(401, 'Please sign in again.'); }
+  const a = await one('SELECT id,username,name,role,disabled FROM admins WHERE id=?', [payload.id]);
+  if (!a || a.disabled) throw err(401, 'Please sign in again.');
+  req.admin = a;
+  next();
+}));
+
+
+/* ----- teacher accounts (main administrator only) ----- */
+const requireSuper = (req, res, next) => (req.admin.role === 'superadmin' ? next() : next(err(403, 'Only the main administrator can manage teacher accounts.')));
+const USER_RE = /^[A-Za-z0-9._-]{3,40}$/;
+app.get('/api/admin/me', (req, res) => res.json({ id: req.admin.id, username: req.admin.username, name: req.admin.name, role: req.admin.role }));
+app.get('/api/admin/teachers', requireSuper, wrap(async (req, res) => {
+  res.json(await all("SELECT a.id, a.username, a.name, a.role, a.disabled, a.created_at, (SELECT COUNT(*) FROM exams WHERE owner_id=a.id) exams FROM admins a ORDER BY (a.role='superadmin') DESC, a.id"));
+}));
+app.post('/api/admin/teachers', requireSuper, wrap(async (req, res) => {
+  const username = String(req.data.username || '').trim();
+  const name = String(req.data.name || '').trim().slice(0, 80);
+  const password = String(req.data.password || '');
+  if (!USER_RE.test(username)) throw err(400, 'Username must be 3–40 characters: letters, numbers, dot, dash or underscore.');
+  if (password.length < 8) throw err(400, 'Password must be at least 8 characters.');
+  if (await one('SELECT 1 x FROM admins WHERE lower(username)=lower(?)', [username])) throw err(409, 'That username is already taken.');
+  await run("INSERT INTO admins(username,hash,role,name,created_at) VALUES(?,?,'teacher',?,?)", [username, bcrypt.hashSync(password, 12), name, now()]);
+  res.status(201).json({ ok: true });
+}));
+const teacherTarget = async (id) => {
+  const t = await one('SELECT * FROM admins WHERE id=?', [id]);
+  if (!t) throw err(404, 'Teacher not found.');
+  if (t.role === 'superadmin') throw err(400, 'The main administrator account cannot be changed here.');
+  return t;
+};
+app.put('/api/admin/teachers/:id', requireSuper, wrap(async (req, res) => {
+  const t = await teacherTarget(+req.params.id);
+  if (req.data.password !== undefined) {
+    const p = String(req.data.password);
+    if (p.length < 8) throw err(400, 'Password must be at least 8 characters.');
+    await run('UPDATE admins SET hash=? WHERE id=?', [bcrypt.hashSync(p, 12), t.id]);
+  }
+  if (req.data.disabled !== undefined) await run('UPDATE admins SET disabled=? WHERE id=?', [req.data.disabled ? 1 : 0, t.id]);
+  if (req.data.name !== undefined) await run('UPDATE admins SET name=? WHERE id=?', [String(req.data.name).trim().slice(0, 80), t.id]);
+  res.json({ ok: true });
+}));
+app.delete('/api/admin/teachers/:id', requireSuper, wrap(async (req, res) => {
+  const t = await teacherTarget(+req.params.id);
+  if ((await one('SELECT COUNT(*) c FROM exams WHERE owner_id=?', [t.id])).c) throw err(409, 'This teacher still owns exams. Disable the account instead, or ask the teacher to delete their exams first.');
+  await run('DELETE FROM admins WHERE id=?', [t.id]);
+  res.json({ ok: true });
+}));
 
 app.post('/api/admin/password', wrap(async (req, res) => {
   const p = String(req.data.newPassword || '');
@@ -534,11 +599,11 @@ app.post('/api/admin/password', wrap(async (req, res) => {
 }));
 app.get('/api/admin/stats', wrap(async (req, res) => {
   await sweep();
-  const exams = await all('SELECT * FROM exams');
-  const subs = await summaries('WHERE a.submitted_at IS NOT NULL');
+  const exams = await all('SELECT * FROM exams WHERE owner_id=?', [req.admin.id]);
+  const subs = await summaries(['a.submitted_at IS NOT NULL', 'e.owner_id=?'], [req.admin.id]);
   res.json({
     exams: exams.length, open: exams.filter((e) => examState(e) === 'open').length,
-    active: (await one('SELECT COUNT(*) c FROM attempts WHERE submitted_at IS NULL')).c,
+    active: (await one('SELECT COUNT(*) c FROM attempts a JOIN exams e ON e.id=a.exam_id WHERE a.submitted_at IS NULL AND e.owner_id=?', [req.admin.id])).c,
     submissions: subs.length, pending: subs.filter((s) => s.pending).length,
     avg: subs.length ? Math.round((subs.reduce((t, s) => t + s.pct, 0) / subs.length) * 10) / 10 : 0,
     passRate: subs.length ? Math.round((subs.filter((s) => s.status === 'Pass').length / subs.length) * 100) : 0,
@@ -547,18 +612,18 @@ app.get('/api/admin/stats', wrap(async (req, res) => {
 app.get('/api/admin/exams', wrap(async (req, res) => {
   const rows = await all(`SELECT e.*, (SELECT COUNT(*) FROM questions WHERE exam_id=e.id) qn,
     (SELECT COALESCE(SUM(marks),0) FROM questions WHERE exam_id=e.id) total,
-    (SELECT COUNT(*) FROM attempts WHERE exam_id=e.id) attempts FROM exams e ORDER BY e.id DESC`);
+    (SELECT COUNT(*) FROM attempts WHERE exam_id=e.id) attempts FROM exams e WHERE e.owner_id=? ORDER BY e.id DESC`, [req.admin.id]);
   res.json(rows.map((e) => ({ ...e, state: examState(e) })));
 }));
 app.get('/api/admin/exams/:id', wrap(async (req, res) => {
-  const e = await one('SELECT * FROM exams WHERE id=?', [+req.params.id]);
+  const e = await one('SELECT * FROM exams WHERE id=? AND owner_id=?', [+req.params.id, req.admin.id]);
   if (!e) throw err(404, 'Exam not found.');
   res.json({ ...e, state: examState(e), locked: !!(await one('SELECT 1 x FROM attempts WHERE exam_id=? LIMIT 1', [e.id])), questions: (await all('SELECT * FROM questions WHERE exam_id=? ORDER BY pos', [e.id])).map(parseQ) });
 }));
-app.post('/api/admin/exams', wrap(async (req, res) => res.status(201).json(await saveExam(null, req.data))));
-app.put('/api/admin/exams/:id', wrap(async (req, res) => res.json(await saveExam(+req.params.id, req.data))));
+app.post('/api/admin/exams', wrap(async (req, res) => res.status(201).json(await saveExam(null, req.data, req.admin.id))));
+app.put('/api/admin/exams/:id', wrap(async (req, res) => res.json(await saveExam(+req.params.id, req.data, req.admin.id))));
 app.post('/api/admin/exams/:id/publish', wrap(async (req, res) => {
-  const e = await one('SELECT * FROM exams WHERE id=?', [+req.params.id]);
+  const e = await one('SELECT * FROM exams WHERE id=? AND owner_id=?', [+req.params.id, req.admin.id]);
   if (!e) throw err(404, 'Exam not found.');
   const on = req.data.published ? 1 : 0;
   if (on && (await totalMarks(e.id)) === 0) throw err(400, 'Add at least one question before publishing.');
@@ -567,6 +632,7 @@ app.post('/api/admin/exams/:id/publish', wrap(async (req, res) => {
 }));
 app.delete('/api/admin/exams/:id', wrap(async (req, res) => {
   const id = +req.params.id;
+  if (!(await one('SELECT 1 x FROM exams WHERE id=? AND owner_id=?', [id, req.admin.id]))) throw err(404, 'Exam not found.');
   await db.batch([
     { sql: 'DELETE FROM answers WHERE attempt_id IN (SELECT id FROM attempts WHERE exam_id=?)', args: [id] },
     { sql: 'DELETE FROM attempts WHERE exam_id=?', args: [id] },
@@ -619,25 +685,25 @@ app.get('/api/admin/live', wrap(async (req, res) => {
   const rows = await all(`SELECT a.*, e.title,
     (SELECT COUNT(*) FROM questions WHERE exam_id=a.exam_id) qn,
     (SELECT COUNT(*) FROM answers WHERE attempt_id=a.id AND TRIM(COALESCE(response,''))<>'') answered
-    FROM attempts a JOIN exams e ON e.id=a.exam_id WHERE a.submitted_at IS NULL ORDER BY a.started_at DESC`);
+    FROM attempts a JOIN exams e ON e.id=a.exam_id WHERE a.submitted_at IS NULL AND e.owner_id=? ORDER BY a.started_at DESC`, [req.admin.id]);
   res.json(rows.map((r) => ({ id: r.id, name: r.name, exam: r.title, answered: r.answered, total: r.qn, remaining: Math.max(0, Math.round((r.deadline - now()) / 1000)), startedAt: r.started_at })));
 }));
 
-async function listResults(q) {
+async function listResults(q, ownerId) {
   await sweep();
   const exam = +q.exam_id || 0;
   const needle = norm(q.q);
-  return (await summaries(exam ? 'WHERE a.exam_id=?' : '', exam ? [exam] : []))
+  return (await summaries(['e.owner_id=?', ...(exam ? ['a.exam_id=?'] : [])], [ownerId, ...(exam ? [exam] : [])]))
     .filter((s) => (!q.status || s.status === q.status) && (!needle || norm(s.name).includes(needle)));
 }
-app.get('/api/admin/results', wrap(async (req, res) => res.json(await listResults(req.query))));
+app.get('/api/admin/results', wrap(async (req, res) => res.json(await listResults(req.query, req.admin.id))));
 app.get('/api/admin/attempts/:id', wrap(async (req, res) => {
-  const a = await one('SELECT * FROM attempts WHERE id=?', [+req.params.id]);
+  const a = await ownAttempt(+req.params.id, req.admin.id);
   if (!a) throw err(404, 'Attempt not found.');
-  res.json({ ...(await summaries('WHERE a.id=?', [a.id]))[0], review: await review(a) });
+  res.json({ ...(await summaries(['a.id=?'], [a.id]))[0], review: await review(a) });
 }));
 app.put('/api/admin/attempts/:id/grade', wrap(async (req, res) => {
-  const a = await one('SELECT * FROM attempts WHERE id=?', [+req.params.id]);
+  const a = await ownAttempt(+req.params.id, req.admin.id);
   if (!a || !a.submitted_at) throw err(404, 'Submitted attempt not found.');
   const q = await one('SELECT * FROM questions WHERE id=? AND exam_id=?', [+req.data.questionId, a.exam_id]);
   const awarded = Number(req.data.awarded);
@@ -647,13 +713,14 @@ app.put('/api/admin/attempts/:id/grade', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 app.delete('/api/admin/attempts/:id', wrap(async (req, res) => {
+  if (!(await ownAttempt(+req.params.id, req.admin.id))) throw err(404, 'Attempt not found.');
   await db.batch([{ sql: 'DELETE FROM answers WHERE attempt_id=?', args: [+req.params.id] }, { sql: 'DELETE FROM attempts WHERE id=?', args: [+req.params.id] }], 'write');
   res.json({ ok: true });
 }));
 
 const safeCell = (v) => (typeof v === 'string' && /^[=+\-@]/.test(v) ? "'" + v : v);
 app.get('/api/admin/export/:fmt', wrap(async (req, res) => {
-  const rows = (await listResults(req.query)).map((s) => ({ ...s, name: safeCell(s.name), when: s.submittedAt ? new Date(s.submittedAt).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : '' }));
+  const rows = (await listResults(req.query, req.admin.id)).map((s) => ({ ...s, name: safeCell(s.name), when: s.submittedAt ? new Date(s.submittedAt).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : '' }));
   const head = ['Student', 'Exam', 'Score', 'Total', 'Percentage', 'Status', 'Submitted'];
   const line = (s) => [s.name, s.exam, s.score, s.total, s.pct + '%', s.status, s.when];
   const stamp = new Date().toISOString().slice(0, 10);

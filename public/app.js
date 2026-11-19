@@ -12,6 +12,7 @@ const bc = (s) => String(s).replace(/\s+/g, '-');
 const fmtDate = (ms) => (ms ? new Date(ms).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '—');
 const fmtClock = (s) => { s = Math.max(0, s); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return (h ? h + ':' : '') + String(m).padStart(2, '0') + ':' + String(x).padStart(2, '0'); };
 const tok = () => localStorage.getItem('adminToken');
+let ME = null; // signed-in admin: { username, name, role }
 const LOAD = '<div class="load"><div class="spinner"></div></div>';
 
 /* ---------- core helpers ---------- */
@@ -27,7 +28,7 @@ async function api(url, { method = 'GET', body, as } = {}) {
   catch { throw new Error('Network error — check your connection and try again.'); }
   const d = await r.json().catch(() => ({}));
   if (r.status === 401 && as === 'admin') {
-    localStorage.removeItem('adminToken');
+    localStorage.removeItem('adminToken'); ME = null;
     if (location.hash === '#/admin') route(); else location.hash = '#/admin';
     throw Object.assign(new Error('Session expired'), { status: 401 });
   }
@@ -287,20 +288,58 @@ function viewLogin() {
     busy($('button', e.target), async () => { const r = await api('/api/admin/login', { method: 'POST', body: f }); localStorage.setItem('adminToken', r.token); location.hash = '#/admin/dashboard'; route(); });
   };
 }
-const TABS = [['dashboard', 'Dashboard'], ['exams', 'Exams'], ['live', 'Live monitor'], ['results', 'Results']];
+const tabs = () => [['dashboard', 'Dashboard'], ['exams', 'Exams'], ['live', 'Live monitor'], ['results', 'Results'], ...(ME && ME.role === 'superadmin' ? [['teachers', 'Teachers']] : [])];
 function adminShell(active, inner) {
-  app.innerHTML = head('<button class="btn ghost sm" data-act="logout">Log out</button>') +
-    `<nav class="tabs">${TABS.map(([k, l]) => `<a href="#/admin/${k}" class="${k === active ? 'on' : ''}">${l}</a>`).join('')}</nav><main class="wrap fade">${inner}</main>`;
+  app.innerHTML = head(`<span class="sm mut hide-sm">${esc((ME && (ME.name || ME.username)) || '')}</span><button class="btn ghost sm" data-act="logout">Log out</button>`) +
+    `<nav class="tabs">${tabs().map(([k, l]) => `<a href="#/admin/${k}" class="${k === active ? 'on' : ''}">${l}</a>`).join('')}</nav><main class="wrap fade">${inner}</main>`;
 }
-actions.logout = () => { localStorage.removeItem('adminToken'); location.hash = '#/admin'; route(); };
+actions.logout = () => { localStorage.removeItem('adminToken'); ME = null; location.hash = '#/admin'; route(); };
 actions.pw = () => modal(`<h3>Change password</h3><label>Current password<input id="op" type="password" autocomplete="current-password"></label><label>New password (at least 8 characters)<input id="np" type="password" autocomplete="new-password"></label><div class="row end"><button class="btn ghost" data-act="mclose">Cancel</button><button class="btn pri" data-act="savepw">Update password</button></div>`);
 actions.savepw = (b) => busy(b, async () => { await api('/api/admin/password', { method: 'POST', as: 'admin', body: { oldPassword: $('#op').value, newPassword: $('#np').value } }); closeModal(); toast('Password updated'); });
+
+/* ---------- admin: teacher accounts (main administrator only) ---------- */
+const randomPw = () => { const c = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789'; const a = new Uint32Array(10); crypto.getRandomValues(a); return [...a].map((x) => c[x % c.length]).join(''); };
+async function viewTeachers() {
+  adminShell('teachers', LOAD);
+  const list = await api('/api/admin/teachers', { as: 'admin' });
+  $('main').innerHTML = `<div class="row between" style="margin-bottom:14px"><div><h2 style="margin:0">Teachers</h2><p class="mut" style="margin:0">Each teacher signs in at /admin and sees only their own exams and results.</p></div><button class="btn pri" data-act="addt">Add teacher</button></div>
+  <div class="card scroll"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Exams</th><th>Status</th><th></th></tr></thead><tbody>${list.map((t) => `<tr><td><b>${esc(t.name || '—')}</b></td><td>${esc(t.username)}</td><td>${t.role === 'superadmin' ? 'Main admin' : 'Teacher'}</td><td>${t.exams}</td><td><span class="badge ${t.disabled ? 'Fail' : 'Pass'}">${t.disabled ? 'Disabled' : 'Active'}</span></td>
+  <td class="right">${t.role === 'superadmin' ? '' : `<button class="btn sm" data-act="resett" data-id="${t.id}" data-u="${esc(t.username)}">Reset password</button> <button class="btn sm" data-act="togglet" data-id="${t.id}" data-on="${t.disabled ? 0 : 1}">${t.disabled ? 'Enable' : 'Disable'}</button> <button class="btn sm danger" data-act="delt" data-id="${t.id}" data-u="${esc(t.username)}">Delete</button>`}</td></tr>`).join('')}</tbody></table></div>
+  <p class="sm mut" style="margin-top:14px">Teachers cannot see each other's exams, students or results, and neither can you. Disable an account to block sign-in without losing the teacher's data. An account can only be deleted when the teacher owns no exams.</p>`;
+}
+actions.addt = () => modal(`<h3>Add a teacher</h3>
+  <label>Full name<input id="tn" maxlength="80" placeholder="Mr. Abebe Kebede"></label>
+  <label>Username<input id="tu" maxlength="40" autocomplete="off" placeholder="abebe.k"></label>
+  <label>Temporary password (at least 8 characters)<input id="tp" value="${randomPw()}" autocomplete="off"></label>
+  <p class="sm mut">Give the teacher the username and password. They sign in at /admin and can change the password under Dashboard, Change password.</p>
+  <div class="row end"><button class="btn ghost" data-act="genpw">New password</button><button class="btn ghost" data-act="mclose">Cancel</button><button class="btn pri" data-act="savet">Create account</button></div>`);
+actions.genpw = () => { $('#tp').value = randomPw(); };
+actions.savet = (b) => busy(b, async () => {
+  const body = { name: $('#tn').value, username: $('#tu').value, password: $('#tp').value };
+  await api('/api/admin/teachers', { method: 'POST', as: 'admin', body });
+  closeModal(); toast(`Teacher added. Username: ${body.username}`); route();
+});
+actions.resett = (b) => modal(`<h3>Reset password</h3><p class="mut">New password for <b>${esc(b.dataset.u)}</b> (at least 8 characters).</p><label>New password<input id="rp" value="${randomPw()}" autocomplete="off"></label>
+  <div class="row end"><button class="btn ghost" data-act="mclose">Cancel</button><button class="btn pri" data-act="savepwt" data-id="${b.dataset.id}">Save password</button></div>`);
+actions.savepwt = (b) => busy(b, async () => {
+  const password = $('#rp').value;
+  await api(`/api/admin/teachers/${b.dataset.id}`, { method: 'PUT', as: 'admin', body: { password } });
+  closeModal(); toast('Password updated. Share the new password with the teacher.');
+});
+actions.togglet = (b) => busy(b, async () => {
+  await api(`/api/admin/teachers/${b.dataset.id}`, { method: 'PUT', as: 'admin', body: { disabled: +b.dataset.on === 1 } });
+  toast(+b.dataset.on ? 'Account disabled' : 'Account enabled'); route();
+});
+actions.delt = async (b) => {
+  if (await confirmBox('Delete this teacher account?', `The account "${b.dataset.u}" will be removed. This cannot be undone.`, 'Delete account', true))
+    busy(b, async () => { await api(`/api/admin/teachers/${b.dataset.id}`, { method: 'DELETE', as: 'admin' }); toast('Account deleted'); route(); });
+};
 
 /* ---------- admin: dashboard & exams ---------- */
 async function viewDash() {
   adminShell('dashboard', LOAD);
   const [s, ex] = await Promise.all([api('/api/admin/stats', { as: 'admin' }), api('/api/admin/exams', { as: 'admin' })]);
-  $('main').innerHTML = `<div class="row between" style="margin-bottom:16px"><div><h2 style="margin:0">Overview</h2><p class="mut" style="margin:0">What is happening across your exams.</p></div>
+  $('main').innerHTML = `<div class="row between" style="margin-bottom:16px"><div><h2 style="margin:0">Overview</h2><p class="mut" style="margin:0">Your exams and results. Only you can see them.</p></div>
     <div class="row"><button class="btn ghost" data-act="pw">Change password</button><button class="btn" data-act="aigo">Generate with AI</button><button class="btn" data-act="imp">Import PDF / Word</button><a class="btn pri" href="#/admin/exam/new">New exam</a></div></div>
     <div class="grid g4">${[['Exams', s.exams], ['Open now', s.open], ['Taking an exam now', s.active], ['Submissions', s.submissions], ['Average score', s.avg + '%'], ['Pass rate', s.passRate + '%'], ['Needs grading', s.pending]].map(([l, v]) => `<div class="card stat"><b>${v}</b><span>${l}</span></div>`).join('')}</div>
     <h3 style="margin:28px 0 12px">Recent exams</h3>
@@ -573,7 +612,9 @@ async function route() {
     if (p[0] === 'result') return await viewResult();
     if (p[0] === 'admin') {
       if (!tok()) return viewLogin();
+      if (!ME) ME = await api('/api/admin/me', { as: 'admin' });
       const v = p[1] || 'dashboard';
+      if (v === 'teachers') return ME.role === 'superadmin' ? await viewTeachers() : await viewDash();
       if (v === 'exams') return await viewExams();
       if (v === 'exam') return await viewEditor(p[2] || 'new');
       if (v === 'live') return await viewLive();
