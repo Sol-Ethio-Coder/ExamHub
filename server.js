@@ -71,6 +71,11 @@ function init() {
     await addCol('admins', 'disabled', 'INTEGER NOT NULL DEFAULT 0');
     await addCol('admins', 'created_at', 'INTEGER');
     await addCol('exams', 'owner_id', 'INTEGER');
+    await addCol('exams', 'lockdown', 'INTEGER NOT NULL DEFAULT 0');
+    await addCol('exams', 'max_violations', 'INTEGER NOT NULL DEFAULT 3');
+    await addCol('exams', 'require_seb', 'INTEGER NOT NULL DEFAULT 0');
+    await addCol('attempts', 'violations', 'INTEGER NOT NULL DEFAULT 0');
+    await addCol('attempts', 'viol_log', "TEXT NOT NULL DEFAULT ''");
     await run('CREATE INDEX IF NOT EXISTS idx_e_owner ON exams(owner_id)');
     if (!(await one('SELECT 1 x FROM admins'))) {
       const u = process.env.ADMIN_USERNAME || 'admin';
@@ -92,6 +97,9 @@ function init() {
 
 /* ---------- helpers ---------- */
 const now = () => Date.now();
+// Safe Exam Browser identifies itself in its user agent (a deterrent only: a determined student can fake it).
+const isSEB = (req) => /SEB|SafeExamBrowser/i.test(req.get('user-agent') || '') || !!req.get('x-safeexambrowser-requesthash');
+const SEB_MSG = 'This exam must be taken in Safe Exam Browser. Please open the exam link inside the Safe Exam Browser application.';
 const err = (status, message) => Object.assign(new Error(message), { status });
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -113,10 +121,13 @@ function cleanExam(b) {
     title: s(b.title, 150), subject: s(b.subject, 100), instructions: s(b.instructions, 3000),
     duration: Math.round(+b.duration), pass_marks: +b.pass_marks || 0,
     start_at: b.start_at ? +b.start_at : null, end_at: b.end_at ? +b.end_at : null, published: b.published ? 1 : 0,
+    lockdown: b.lockdown ? 1 : 0, require_seb: b.require_seb ? 1 : 0,
+    max_violations: b.max_violations === undefined || b.max_violations === null || b.max_violations === '' ? 3 : Math.round(+b.max_violations),
   };
   if (!e.title) throw err(400, 'Exam title is required.');
   if (!(e.duration >= 1 && e.duration <= 600)) throw err(400, 'Duration must be between 1 and 600 minutes.');
   if (e.pass_marks < 0) throw err(400, 'Passing marks cannot be negative.');
+  if (!(e.max_violations >= 0 && e.max_violations <= 10)) throw err(400, 'The violation limit must be between 0 and 10 (0 = never submit automatically).');
   if (e.start_at && e.end_at && e.end_at <= e.start_at) throw err(400, 'The closing time must be after the opening time.');
   return e;
 }
@@ -152,10 +163,10 @@ async function saveExam(id, b, ownerId) {
   let code = null;
   if (id === null) {
     code = await genCode();
-    stmts.push({ sql: 'INSERT INTO exams(title,subject,instructions,code,duration,pass_marks,start_at,end_at,published,created_at,owner_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)', args: [e.title, e.subject, e.instructions, code, e.duration, e.pass_marks, e.start_at, e.end_at, e.published, now(), ownerId] });
+    stmts.push({ sql: 'INSERT INTO exams(title,subject,instructions,code,duration,pass_marks,start_at,end_at,published,created_at,owner_id,lockdown,max_violations,require_seb) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)', args: [e.title, e.subject, e.instructions, code, e.duration, e.pass_marks, e.start_at, e.end_at, e.published, now(), ownerId, e.lockdown, e.max_violations, e.require_seb] });
   } else {
     if (!(await one('SELECT 1 x FROM exams WHERE id=? AND owner_id=?', [id, ownerId]))) throw err(404, 'Exam not found.');
-    stmts.push({ sql: 'UPDATE exams SET title=?,subject=?,instructions=?,duration=?,pass_marks=?,start_at=?,end_at=?,published=? WHERE id=?', args: [e.title, e.subject, e.instructions, e.duration, e.pass_marks, e.start_at, e.end_at, e.published, id] });
+    stmts.push({ sql: 'UPDATE exams SET title=?,subject=?,instructions=?,duration=?,pass_marks=?,start_at=?,end_at=?,published=?,lockdown=?,max_violations=?,require_seb=? WHERE id=?', args: [e.title, e.subject, e.instructions, e.duration, e.pass_marks, e.start_at, e.end_at, e.published, e.lockdown, e.max_violations, e.require_seb, id] });
   }
   if (qs) {
     if (id !== null) {
@@ -196,9 +207,9 @@ const sweep = async () => { for (const r of await all('SELECT id FROM attempts W
 const mkSummary = (r) => {
   const pending = r.pending || 0;
   const status = !r.submitted_at ? 'In progress' : pending ? 'Pending review' : r.score >= r.pass_marks ? 'Pass' : 'Fail';
-  return { id: r.id, name: r.name, exam: r.exam, examId: r.exam_id, score: r.score, total: r.total, pct: r.total ? Math.round((r.score / r.total) * 1000) / 10 : 0, pending, status, passMarks: r.pass_marks, startedAt: r.started_at, submittedAt: r.submitted_at, auto: !!r.auto };
+  return { id: r.id, name: r.name, exam: r.exam, examId: r.exam_id, score: r.score, total: r.total, pct: r.total ? Math.round((r.score / r.total) * 1000) / 10 : 0, pending, status, passMarks: r.pass_marks, startedAt: r.started_at, submittedAt: r.submitted_at, auto: !!r.auto, autoReason: r.auto === 2 ? 'violations' : r.auto ? 'time' : '', violations: r.violations || 0 };
 };
-const summaries = async (conds = [], args = []) => (await all(`SELECT a.id, a.exam_id, a.name, a.started_at, a.submitted_at, a.auto, e.title exam, e.pass_marks,
+const summaries = async (conds = [], args = []) => (await all(`SELECT a.id, a.exam_id, a.name, a.started_at, a.submitted_at, a.auto, a.violations, e.title exam, e.pass_marks,
   (SELECT COALESCE(SUM(marks),0) FROM questions WHERE exam_id=a.exam_id) total,
   (SELECT COALESCE(SUM(awarded),0) FROM answers WHERE attempt_id=a.id) score,
   (SELECT COUNT(*) FROM answers WHERE attempt_id=a.id AND awarded IS NULL) pending
@@ -460,12 +471,13 @@ const joinLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, standardHeaders: t
 app.get('/api/health', wrap(async (req, res) => { await one('SELECT 1 x'); res.json({ ok: true, serverless: SERVERLESS }); }));
 
 /* ----- student ----- */
-async function openExam(nameRaw, codeRaw) {
+async function openExam(nameRaw, codeRaw, req) {
   const name = String(nameRaw || '').trim().replace(/\s+/g, ' ');
   const code = String(codeRaw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   if (name.length < 2 || name.length > 80) throw err(400, 'Enter your full name (2–80 characters).');
   const exam = code && (await one('SELECT * FROM exams WHERE code=? AND published=1', [code]));
   if (!exam) throw err(404, 'That exam code is not valid.');
+  if (exam.require_seb && !isSEB(req)) throw err(403, SEB_MSG);
   if (exam.start_at && now() < exam.start_at) throw err(403, `This exam opens on ${new Date(exam.start_at).toUTCString()}.`);
   if (exam.end_at && now() > exam.end_at) throw err(403, 'This exam is closed.');
   const key = norm(name);
@@ -474,33 +486,59 @@ async function openExam(nameRaw, codeRaw) {
   return { exam, name, key };
 }
 app.post('/api/student/lookup', joinLimiter, wrap(async (req, res) => {
-  const { exam } = await openExam(req.data.name, req.data.code);
+  const { exam } = await openExam(req.data.name, req.data.code, req);
   const n = (await one('SELECT COUNT(*) c FROM questions WHERE exam_id=?', [exam.id])).c;
-  res.json({ title: exam.title, subject: exam.subject, instructions: exam.instructions, duration: exam.duration, questions: n, total: await totalMarks(exam.id), passMarks: exam.pass_marks });
+  res.json({ title: exam.title, subject: exam.subject, instructions: exam.instructions, duration: exam.duration, questions: n, total: await totalMarks(exam.id), passMarks: exam.pass_marks, lockdown: !!exam.lockdown, maxViolations: exam.max_violations, requireSeb: !!exam.require_seb });
 }));
 app.post('/api/student/start', joinLimiter, wrap(async (req, res) => {
-  const { exam, name, key } = await openExam(req.data.name, req.data.code);
+  const { exam, name, key } = await openExam(req.data.name, req.data.code, req);
   const token = crypto.randomBytes(24).toString('hex');
   try {
     await run('INSERT INTO attempts(exam_id,name,name_key,token,started_at,deadline) VALUES(?,?,?,?,?,?)', [exam.id, name, key, token, now(), now() + exam.duration * 60000]);
   } catch { throw err(409, 'You have already started this exam.'); }
   res.json({ token });
 }));
+const AQ = 'SELECT a.*, e.lockdown, e.max_violations, e.require_seb FROM attempts a JOIN exams e ON e.id=a.exam_id WHERE ';
 const studentAuth = wrap(async (req, res, next) => {
   const t = req.get('x-attempt-token');
-  let a = t && (await one('SELECT * FROM attempts WHERE token=?', [t]));
+  let a = t && (await one(AQ + 'a.token=?', [t]));
   if (!a) throw err(401, 'Exam session not found.');
-  if (!a.submitted_at && now() > a.deadline) { await finalize(a.id, true); a = await one('SELECT * FROM attempts WHERE id=?', [a.id]); }
+  if (!a.submitted_at && now() > a.deadline) { await finalize(a.id, true); a = await one(AQ + 'a.id=?', [a.id]); }
+  if (a.require_seb && !a.submitted_at && !isSEB(req)) throw err(403, SEB_MSG);
   req.attempt = a;
   next();
 });
 app.get('/api/student/attempt', studentAuth, wrap(async (req, res) => {
   const a = req.attempt;
   if (a.submitted_at) return res.json({ submitted: true });
-  const exam = await one('SELECT title,subject,instructions,duration FROM exams WHERE id=?', [a.exam_id]);
+  const exam = await one('SELECT title,subject,instructions,duration,lockdown,max_violations FROM exams WHERE id=?', [a.exam_id]);
   const questions = (await all('SELECT id,type,text,options,marks FROM questions WHERE exam_id=? ORDER BY pos', [a.exam_id])).map(parseQ);
   const answers = Object.fromEntries((await all('SELECT question_id,response FROM answers WHERE attempt_id=?', [a.id])).map((r) => [r.question_id, r.response]));
-  res.json({ exam, name: a.name, questions, answers, remaining: a.deadline - now() });
+  res.json({ exam: { title: exam.title, subject: exam.subject, instructions: exam.instructions, duration: exam.duration, lockdown: !!exam.lockdown, maxViolations: exam.max_violations }, violations: a.violations, name: a.name, questions, answers, remaining: a.deadline - now() });
+}));
+// Security events from the student's browser in strict (secure) mode.
+const VIOLATION_TYPES = ['tab_hidden', 'window_blur', 'fullscreen_exit'];
+app.post('/api/student/violation', studentAuth, wrap(async (req, res) => {
+  const a = req.attempt;
+  if (a.submitted_at) return res.json({ submitted: true, violations: a.violations, max: a.max_violations });
+  if (!a.lockdown) return res.json({ violations: 0, max: 0 });
+  const type = String(req.data.type || '');
+  if (!VIOLATION_TYPES.includes(type)) throw err(400, 'Invalid event.');
+  let log = [];
+  try { log = JSON.parse(a.viol_log || '[]'); } catch { log = []; }
+  const last = log[log.length - 1];
+  if (last && now() - last.t < 1500) return res.json({ violations: a.violations, max: a.max_violations }); // one action fires several browser events
+  log.push({ t: now(), type });
+  while (log.length > 50) log.shift();
+  const v = a.violations + 1;
+  await run('UPDATE attempts SET violations=?, viol_log=? WHERE id=?', [v, JSON.stringify(log), a.id]);
+  let submitted = false;
+  if (a.max_violations > 0 && v >= a.max_violations) {
+    await finalize(a.id, true);
+    await run('UPDATE attempts SET auto=2 WHERE id=?', [a.id]); // 2 = submitted automatically after too many violations
+    submitted = true;
+  }
+  res.json({ violations: v, max: a.max_violations, submitted });
 }));
 async function storeAnswers(a, entries) {
   const valid = new Set((await all('SELECT id FROM questions WHERE exam_id=?', [a.exam_id])).map((r) => r.id));
@@ -686,7 +724,7 @@ app.get('/api/admin/live', wrap(async (req, res) => {
     (SELECT COUNT(*) FROM questions WHERE exam_id=a.exam_id) qn,
     (SELECT COUNT(*) FROM answers WHERE attempt_id=a.id AND TRIM(COALESCE(response,''))<>'') answered
     FROM attempts a JOIN exams e ON e.id=a.exam_id WHERE a.submitted_at IS NULL AND e.owner_id=? ORDER BY a.started_at DESC`, [req.admin.id]);
-  res.json(rows.map((r) => ({ id: r.id, name: r.name, exam: r.title, answered: r.answered, total: r.qn, remaining: Math.max(0, Math.round((r.deadline - now()) / 1000)), startedAt: r.started_at })));
+  res.json(rows.map((r) => ({ id: r.id, name: r.name, exam: r.title, answered: r.answered, total: r.qn, remaining: Math.max(0, Math.round((r.deadline - now()) / 1000)), startedAt: r.started_at, violations: r.violations || 0 })));
 }));
 
 async function listResults(q, ownerId) {
@@ -700,7 +738,7 @@ app.get('/api/admin/results', wrap(async (req, res) => res.json(await listResult
 app.get('/api/admin/attempts/:id', wrap(async (req, res) => {
   const a = await ownAttempt(+req.params.id, req.admin.id);
   if (!a) throw err(404, 'Attempt not found.');
-  res.json({ ...(await summaries(['a.id=?'], [a.id]))[0], review: await review(a) });
+  res.json({ ...(await summaries(['a.id=?'], [a.id]))[0], review: await review(a), violationLog: (() => { try { return JSON.parse(a.viol_log || '[]'); } catch { return []; } })() });
 }));
 app.put('/api/admin/attempts/:id/grade', wrap(async (req, res) => {
   const a = await ownAttempt(+req.params.id, req.admin.id);
@@ -721,8 +759,8 @@ app.delete('/api/admin/attempts/:id', wrap(async (req, res) => {
 const safeCell = (v) => (typeof v === 'string' && /^[=+\-@]/.test(v) ? "'" + v : v);
 app.get('/api/admin/export/:fmt', wrap(async (req, res) => {
   const rows = (await listResults(req.query, req.admin.id)).map((s) => ({ ...s, name: safeCell(s.name), when: s.submittedAt ? new Date(s.submittedAt).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : '' }));
-  const head = ['Student', 'Exam', 'Score', 'Total', 'Percentage', 'Status', 'Submitted'];
-  const line = (s) => [s.name, s.exam, s.score, s.total, s.pct + '%', s.status, s.when];
+  const head = ['Student', 'Exam', 'Score', 'Total', 'Percentage', 'Status', 'Submitted', 'Violations'];
+  const line = (s) => [s.name, s.exam, s.score, s.total, s.pct + '%', s.status, s.when, s.violations];
   const stamp = new Date().toISOString().slice(0, 10);
   if (req.params.fmt === 'csv') {
     const esc = (v) => `"${String(v).replace(/"/g, '""')}"`;
@@ -732,7 +770,7 @@ app.get('/api/admin/export/:fmt', wrap(async (req, res) => {
   if (req.params.fmt === 'xlsx') {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Results');
-    ws.columns = head.map((h, i) => ({ header: h, width: [26, 30, 10, 10, 12, 16, 22][i] }));
+    ws.columns = head.map((h, i) => ({ header: h, width: [26, 30, 10, 10, 12, 16, 22, 12][i] }));
     rows.forEach((s) => ws.addRow(line(s)));
     ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
     ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1D3FBB' } };
@@ -744,7 +782,7 @@ app.get('/api/admin/export/:fmt', wrap(async (req, res) => {
     const chunks = [];
     doc.on('data', (c) => chunks.push(c));
     const done = new Promise((resolve) => doc.on('end', resolve));
-    const xs = [40, 190, 380, 450, 510, 580, 670];
+    const xs = [40, 175, 345, 405, 460, 520, 600, 740];
     const row = (cells, bold) => { const y = doc.y; doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(9); cells.forEach((c, i) => doc.text(String(c), xs[i], y, { width: (xs[i + 1] || 800) - xs[i] - 6, height: 12, ellipsis: true, lineBreak: false })); doc.y = y + 18; };
     doc.font('Helvetica-Bold').fontSize(18).text('Examination Results', 40, 40);
     doc.font('Helvetica').fontSize(9).fillColor('#555').text(`Generated ${new Date().toUTCString()} · ${rows.length} record(s)`, 40, 64).fillColor('#000');

@@ -6,6 +6,8 @@ Express API + vanilla-JS front end, using a **Turso (libSQL) database**, so it r
 
 Admin area: open **`/admin`** (it is not linked from the public homepage).
 
+**Multiple teachers:** the account created from `ADMIN_USERNAME` / `ADMIN_PASSWORD` is the **main admin**. It can add teacher accounts under the **Teachers** tab. Every teacher works privately: they only see and manage their own exams, students' results, live monitor and exports.
+
 ---
 ## 1. Run locally
 Node.js 18+.
@@ -69,6 +71,24 @@ Explanation: It is the star at the centre of our solar system.
 Answer: photosynthesis | photo synthesis
 ```
 Also understood: `Q1.` / `Question 1` / `(1)` numbering; options as `a)` or `(a)`, or all on one line; `Correct Answer:` / `Ans:`; explanation labelled `Explanation / Reason / Rationale / Solution / Why / Feedback` (multi-line OK); `Marks: 2` or `(2 marks)`; an **Answer Key** section at the end; an option ending in ✓ or `*`, or typed in **bold in Word**, as the correct answer; Word auto-numbered lists. Anything uncertain is flagged with a "Check this question" notice. Scanned/image-only PDFs and old `.doc` files are not supported. Maximum file size 4 MB (hosting limit).
+
+## Secure exam mode (Safe Exam Browser style)
+In the exam editor, the **Exam security** box controls three settings for each exam:
+- **Strict mode** (on by default for new exams). The exam runs in full screen. Switching tabs, minimising, switching to another window or app, or leaving full screen is detected, counted as a **violation**, and shown to the student with a warning they must acknowledge. Copy, cut, paste, right-click, drag, text selection of questions, printing and common shortcuts (F12, Ctrl+Shift+I/J/C, Ctrl+U/S/P) are blocked.
+- **Submit automatically after N violations** (default 3, range 0 to 10). When the limit is reached the exam is submitted at once and the result says why. Use 0 to only record violations without auto-submitting.
+- **Require Safe Exam Browser.** Students must open the exam inside the real [Safe Exam Browser](https://safeexambrowser.org/) app (free). The server refuses other browsers. In SEB, set the *Start URL* to your site address.
+
+Teachers see violations on the **Live monitor** (as they happen), in the **Results** table and exports (a Violations column), and a time-stamped **security log** when reviewing a student's attempt.
+
+**What this can and cannot do.** A website can detect and record that a student left the exam page, but it cannot stop them from opening another tab, a second device or a phone, and browsers do not let pages block shortcuts such as Ctrl+T or Alt+Tab. Strict mode is a strong deterrent with an audit trail. For the strongest control, require Safe Exam Browser and, for high-stakes exams, invigilate the room. The Safe Exam Browser check uses the browser's identifier, which a determined student could fake. iPhones do not support the full-screen API, so on iPhones the tab-switch and app-switch detection still works but full screen is not enforced.
+
+## Teacher accounts (multiple admins)
+1. Sign in at `/admin` as the main admin and open **Teachers → Add teacher**. Enter the teacher's name, a username and a temporary password (a random one is suggested), then give those details to the teacher.
+2. Each teacher signs in at the same `/admin` address, creates their own exams and shares their own exam codes. Teachers cannot see, edit, grade, export or delete anyone else's exams or results. The main admin cannot see them either, except through the Teachers list (name, username, number of exams, status).
+3. **Reset password** replaces a forgotten password. **Disable** blocks sign-in immediately (existing sessions stop working) without deleting the teacher's data, and **Enable** restores access. **Delete** removes an account, but only when it owns no exams.
+4. Teachers can change their own password from **Dashboard → Change password**.
+
+**Upgrading an existing site:** deploy this version over the old one. The database upgrades itself on the first request: your existing admin becomes the main admin and keeps all existing exams and results. No data is lost.
 
 ## AI question generator
 In the exam editor press **Generate with AI**, describe what you want (topic, grade, number of questions, difficulty, language, question types, extra instructions, or paste your own lesson text) and the questions land in the editor for you to review before saving.

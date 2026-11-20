@@ -131,9 +131,11 @@ function viewJoin() {
       modal(`<h3>${esc(i.title)}</h3><p class="mut">${esc(i.subject)}</p>
         <div class="grid g2" style="margin:12px 0"><div class="card stat"><b>${i.duration}</b><span>minutes</span></div><div class="card stat"><b>${i.questions}</b><span>questions · ${num(i.total)} marks</span></div></div>
         ${i.instructions ? `<h3>Instructions</h3><p style="white-space:pre-wrap">${esc(i.instructions)}</p>` : ''}
+        ${i.lockdown ? `<div class="card pad sm" style="border-left:5px solid var(--warn);margin-bottom:12px"><b>Secure exam mode</b><ul style="margin:6px 0 0;padding-left:18px"><li>The exam runs in full screen.</li><li>Switching tabs or windows, or leaving full screen, is recorded and shown to your teacher.</li><li>${i.maxViolations ? `After ${i.maxViolations} violations your exam is submitted automatically.` : 'Violations are recorded for your teacher.'}</li><li>Copying, pasting and right-click are disabled.</li></ul></div>` : ''}
         <p class="sm mut">Pass mark: ${num(i.passMarks)}. Answers save automatically, and refreshing the page will not lose your place.</p>
         <div class="row end"><button class="btn ghost" data-act="mclose">Cancel</button><button class="btn pri" data-act="begin">Start exam now</button></div>`);
       actions.begin = (b) => busy(b, async () => {
+        if (i.lockdown && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
         const { token } = await api('/api/student/start', { method: 'POST', body: f });
         localStorage.setItem('attemptToken', token); closeModal(); location.hash = '#/exam';
       });
@@ -170,6 +172,7 @@ async function viewExam() {
   <div class="exam"><section class="card pad q" id="qbox"></section>
   <aside class="card pad"><h3>Questions</h3><div class="qnav" id="qnav"></div><p class="sm mut" id="count" style="margin:14px 0"></p><button class="btn pri block" data-act="review">Review and submit</button></aside></div></main>`;
   paintQ(); paintNav(); tick(); every(tick, 250);
+  if (S.exam.lockdown) { lockStart(); lockGate(); }
 }
 function tick() {
   const el = $('#timer'); if (!el || !S) return;
@@ -240,6 +243,66 @@ async function submitExam(auto) {
   }
 }
 
+/* ---------- secure (strict) mode ---------- */
+// A web page cannot truly lock a computer. These measures deter cheating and record it for the teacher.
+const FS_OK = !!document.documentElement.requestFullscreen;
+const inFs = () => !!document.fullscreenElement;
+let LK = null;
+const VLABEL = { tab_hidden: 'You left the exam page (tab switch or minimised window).', window_blur: 'The exam window lost focus (another window or app).', fullscreen_exit: 'You left full screen.' };
+const VTXT = { tab_hidden: 'Switched tab or minimised the window', window_blur: 'Window lost focus (another window or app)', fullscreen_exit: 'Left full screen' };
+function showLock(html) {
+  let el = $('#lockov');
+  if (!el) { el = document.createElement('div'); el.id = 'lockov'; el.className = 'lockov'; document.body.append(el); }
+  el.innerHTML = `<div class="lockbox" role="alertdialog" aria-modal="true">${html}</div>`;
+}
+const hideLock = () => { const el = $('#lockov'); if (el) el.remove(); };
+function lockStart() {
+  if (LK) return;
+  LK = { last: 0, handlers: [] };
+  document.body.classList.add('lockdown');
+  const on = (target, type, fn) => { target.addEventListener(type, fn, true); LK.handlers.push([target, type, fn]); };
+  const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+  ['contextmenu', 'copy', 'cut', 'paste', 'dragstart', 'drop'].forEach((t) => on(document, t, stop));
+  on(document, 'keydown', (e) => {
+    const k = String(e.key).toLowerCase(), c = e.ctrlKey || e.metaKey;
+    if (e.key === 'F12' || (c && e.shiftKey && ['i', 'j', 'c', 'k'].includes(k)) || (c && ['u', 's', 'p', 'c', 'v', 'x'].includes(k))) stop(e);
+  });
+  on(document, 'keyup', (e) => { if (e.key === 'PrintScreen') { try { navigator.clipboard.writeText(''); } catch { /* ignore */ } } });
+  on(document, 'visibilitychange', () => { if (document.hidden) violation('tab_hidden'); });
+  on(window, 'blur', (e) => { if (e.target === window) violation('window_blur'); });
+  on(document, 'fullscreenchange', () => { if (FS_OK && !inFs()) violation('fullscreen_exit'); });
+}
+function lockStop() {
+  hideLock();
+  if (!LK) return;
+  LK.handlers.forEach(([t, ty, fn]) => t.removeEventListener(ty, fn, true));
+  LK = null;
+  document.body.classList.remove('lockdown');
+  if (inFs()) document.exitFullscreen().catch(() => {});
+}
+async function violation(type) {
+  if (!LK || !S || S.busy) return;
+  const t = Date.now();
+  if (t - LK.last < 1500) return;
+  LK.last = t;
+  showLock(`<h2>Security warning</h2><p>${VLABEL[type]}</p><p class="mut">Recording…</p>`);
+  let r = null;
+  try { r = await api('/api/student/violation', { method: 'POST', as: 'student', body: { type } }); }
+  catch (e) { if (e.status === 409) { lockStop(); location.hash = '#/result'; return; } }
+  if (r && r.submitted) { window.onbeforeunload = null; clearTimers(); toast('Your exam was submitted automatically because of repeated security violations.', 'err'); location.hash = '#/result'; return; }
+  const left = r && r.max ? r.max - r.violations : null;
+  showLock(`<h2>Security warning</h2><p>${VLABEL[type]}</p>
+    ${r ? `<p><b>Violation ${r.violations}${r.max ? ' of ' + r.max : ''}.</b> ${r.max ? `Your exam is submitted automatically after ${left} more.` : 'It has been recorded for your teacher.'}</p>` : '<p>This has been noted.</p>'}
+    <p class="sm mut">Stay on this page until you finish. Opening other tabs, windows or apps is recorded and shown to your teacher. Your timer is still running.</p>
+    <button class="btn pri" data-act="lkreturn">Return to exam</button>`);
+}
+actions.lkreturn = () => { if (FS_OK && !inFs()) document.documentElement.requestFullscreen().catch(() => {}); hideLock(); };
+function lockGate() {
+  if (!FS_OK || inFs()) return;
+  showLock(`<h2>Secure exam mode</h2><p>This exam runs in full screen. Leaving the page, switching tabs or windows, or exiting full screen is recorded${S.exam.maxViolations ? ` and your exam is submitted automatically after ${S.exam.maxViolations} violations` : ''}. Copying, pasting and right-click are disabled.</p>
+    <p class="sm mut">Your timer is already running.</p><button class="btn pri" data-act="lkreturn">Enter full screen and continue</button>`);
+}
+
 /* ---------- student: result ---------- */
 const show = (q, v) => (v === '' ? '<i>No answer</i>' : q.type === 'mcq' ? esc(String.fromCharCode(65 + +v) + '. ' + (q.options[+v] ?? '')) : q.type === 'tf' ? (v === 'true' ? 'True' : 'False') : esc(v));
 const correctText = (q) => (q.type === 'short' ? (q.answer ? esc(q.answer.split('|').join(' / ')) : 'Marked by your teacher') : show(q, q.answer));
@@ -268,7 +331,7 @@ async function viewResult() {
   app.innerHTML = head() + `<main class="wrap fade"><div class="card pad row" style="gap:28px">
     <div class="ring" style="--p:${r.pct};--c:${col}"><div>${r.pct}%</div></div>
     <div class="grow"><span class="badge ${bc(r.status)}">${esc(r.status)}</span><h2 style="margin-top:8px">${esc(r.name)}</h2>
-    <p class="mut">${esc(r.exam)}${r.auto ? ' · submitted automatically when time ran out' : ''}</p>
+    <p class="mut">${esc(r.exam)}${r.autoReason === 'violations' ? ' · submitted automatically after repeated security violations' : r.auto ? ' · submitted automatically when time ran out' : ''}</p>
     <div class="row" style="gap:22px"><div><b>${num(r.score)}</b> / ${num(r.total)} marks</div><div>Pass mark <b>${num(r.passMarks)}</b></div>
     <div style="color:var(--ok)">${c} correct</div><div style="color:var(--mark)">${w} incorrect</div>${p ? `<div style="color:var(--warn)">${p} awaiting teacher</div>` : ''}</div>
     ${p ? '<p class="sm mut" style="margin:10px 0 0">Your teacher marks short-answer questions by hand, so your final score may change.</p>' : ''}</div></div>
@@ -366,10 +429,10 @@ const toLocal = (ms) => (ms ? new Date(ms - new Date(ms).getTimezoneOffset() * 6
 const blankQ = (type) => ({ type, text: '', options: type === 'mcq' ? ['', '', '', ''] : null, answer: type === 'mcq' ? '0' : type === 'tf' ? 'true' : '', marks: 1, explanation: '' });
 async function viewEditor(id) {
   adminShell('exams', LOAD);
-  if (id === 'new') E = { id: null, locked: false, exam: { title: '', subject: '', duration: 30, pass_marks: 0, instructions: '', start: '', end: '', published: false }, qs: [blankQ('mcq')] };
+  if (id === 'new') E = { id: null, locked: false, exam: { title: '', subject: '', duration: 30, pass_marks: 0, instructions: '', start: '', end: '', published: false, lockdown: true, max_violations: 3, require_seb: false }, qs: [blankQ('mcq')] };
   else {
     const d = await api(`/api/admin/exams/${id}`, { as: 'admin' });
-    E = { id: d.id, locked: d.locked, code: d.code, exam: { title: d.title, subject: d.subject, duration: d.duration, pass_marks: d.pass_marks, instructions: d.instructions, start: toLocal(d.start_at), end: toLocal(d.end_at), published: !!d.published }, qs: d.questions.map((q) => ({ type: q.type, text: q.text, options: q.options || (q.type === 'mcq' ? ['', ''] : null), answer: q.answer, marks: q.marks, explanation: q.explanation })) };
+    E = { id: d.id, locked: d.locked, code: d.code, exam: { title: d.title, subject: d.subject, duration: d.duration, pass_marks: d.pass_marks, instructions: d.instructions, start: toLocal(d.start_at), end: toLocal(d.end_at), published: !!d.published, lockdown: !!d.lockdown, max_violations: d.max_violations, require_seb: !!d.require_seb }, qs: d.questions.map((q) => ({ type: q.type, text: q.text, options: q.options || (q.type === 'mcq' ? ['', ''] : null), answer: q.answer, marks: q.marks, explanation: q.explanation })) };
   }
   const x = E.exam;
   $('main').innerHTML = `<div class="row between" style="margin-bottom:14px"><div><a class="sm" href="#/admin/exams">Back to exams</a><h2 style="margin:4px 0 0">${E.id ? 'Edit exam' : 'New exam'}</h2></div><div class="row"><button class="btn" data-act="ai">Generate with AI</button><button class="btn" data-act="imp">Import PDF / Word</button><button class="btn pri" data-act="saveExam">Save exam</button></div></div>
@@ -401,6 +464,11 @@ Answer: photosynthesis | photo synthesis</pre>
   <label>Closes: last time to start (optional)<input type="datetime-local" data-f="end" value="${x.end}"></label></div>
   <label>Instructions for students<textarea data-f="instructions" maxlength="3000">${esc(x.instructions)}</textarea></label>
   <label class="row" style="gap:10px;margin:0"><input type="checkbox" data-f="published" ${x.published ? 'checked' : ''}> Published: students can enter with the access code</label>
+  <div class="card pad sm" style="margin-top:14px;background:var(--soft)"><b>Exam security</b>
+  <label class="row" style="gap:10px;margin:10px 0 0;font-weight:500"><input type="checkbox" data-f="lockdown" ${x.lockdown ? 'checked' : ''}> Strict mode: full screen, record tab or window switching, block copy, paste and right-click</label>
+  <label style="margin:10px 0 0">Submit automatically after this many violations (0 = never, only record them)<input type="number" min="0" max="10" data-f="max_violations" value="${x.max_violations}" style="max-width:120px"></label>
+  <label class="row" style="gap:10px;margin:10px 0 0;font-weight:500"><input type="checkbox" data-f="require_seb" ${x.require_seb ? 'checked' : ''}> Require Safe Exam Browser (students must open the exam inside the SEB app)</label>
+  <p class="sm mut" style="margin:8px 0 0">A web page cannot fully lock a device. Strict mode discourages and records cheating. For the strongest control, also require Safe Exam Browser.</p></div>
   <p class="sm mut" style="margin:10px 0 0">${E.code ? `Exam code for all students: <b>${esc(E.code)}</b> (permanent, one code per exam)` : 'One unique exam code is generated automatically when you save. Every student uses the same code.'}</p></div>
   <div class="row between" style="margin:24px 0 12px"><h3 style="margin:0">Questions · <span id="tm">0</span> marks in total</h3>
   <div class="row" ${E.locked ? 'hidden' : ''}><button class="btn sm" data-act="addq" data-t="mcq">Add multiple choice</button><button class="btn sm" data-act="addq" data-t="tf">Add true / false</button><button class="btn sm" data-act="addq" data-t="short">Add short answer</button></div></div>
@@ -447,7 +515,7 @@ actions.delopt = (b) => {
 };
 actions.saveExam = (b) => busy(b, async () => {
   const x = E.exam;
-  const body = { title: x.title, subject: x.subject, duration: +x.duration, pass_marks: +x.pass_marks, instructions: x.instructions, published: x.published, start_at: x.start ? new Date(x.start).getTime() : null, end_at: x.end ? new Date(x.end).getTime() : null };
+  const body = { title: x.title, subject: x.subject, duration: +x.duration, pass_marks: +x.pass_marks, instructions: x.instructions, published: x.published, lockdown: x.lockdown, max_violations: x.max_violations === '' ? 3 : +x.max_violations, require_seb: x.require_seb, start_at: x.start ? new Date(x.start).getTime() : null, end_at: x.end ? new Date(x.end).getTime() : null };
   if (!E.locked) body.questions = E.qs;
   const r = await api(E.id ? `/api/admin/exams/${E.id}` : '/api/admin/exams', { method: E.id ? 'PUT' : 'POST', as: 'admin', body });
   toast(E.id ? 'Exam saved' : `Exam created. Exam code for all students: ${r.code}`); location.hash = '#/admin/exams';
@@ -545,7 +613,7 @@ async function viewLive() {
     try {
       const r = await api('/api/admin/live', { as: 'admin' });
       const el = $('#lv'); if (!el) return;
-      el.innerHTML = r.length ? `<div class="scroll"><table><thead><tr><th>Student</th><th>Exam</th><th style="min-width:190px">Progress</th><th>Time left</th><th>Started</th></tr></thead><tbody>${r.map((a) => `<tr><td><b>${esc(a.name)}</b></td><td>${esc(a.exam)}</td><td><div class="row" style="flex-wrap:nowrap"><div class="bar grow"><i style="width:${a.total ? (a.answered / a.total) * 100 : 0}%"></i></div><span class="sm">${a.answered}/${a.total}</span></div></td><td><span class="badge ${a.remaining < 300 ? 'pending' : ''}">${fmtClock(a.remaining)}</span></td><td>${fmtDate(a.startedAt)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty"><h3>No one is taking an exam right now</h3><p>Students appear here the moment they start.</p></div>';
+      el.innerHTML = r.length ? `<div class="scroll"><table><thead><tr><th>Student</th><th>Exam</th><th style="min-width:190px">Progress</th><th>Time left</th><th>Violations</th><th>Started</th></tr></thead><tbody>${r.map((a) => `<tr><td><b>${esc(a.name)}</b></td><td>${esc(a.exam)}</td><td><div class="row" style="flex-wrap:nowrap"><div class="bar grow"><i style="width:${a.total ? (a.answered / a.total) * 100 : 0}%"></i></div><span class="sm">${a.answered}/${a.total}</span></div></td><td><span class="badge ${a.remaining < 300 ? 'pending' : ''}">${fmtClock(a.remaining)}</span></td><td>${a.violations ? `<span class="badge Fail">${a.violations}</span>` : '0'}</td><td>${fmtDate(a.startedAt)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty"><h3>No one is taking an exam right now</h3><p>Students appear here the moment they start.</p></div>';
     } catch (e) { const t = $('#lt'); if (t) t.textContent = e.message; }
   };
   await refresh(); every(refresh, 4000);
@@ -569,7 +637,7 @@ async function loadResults() {
   try {
     const rows = await api('/api/admin/results?' + query(), { as: 'admin' });
     const el = $('#rt'); if (!el) return;
-    el.innerHTML = rows.length ? `<div class="scroll"><table><thead><tr><th>Student</th><th>Exam</th><th>Score</th><th>%</th><th>Status</th><th>Submitted</th><th></th></tr></thead><tbody>${rows.map((s) => `<tr><td><b>${esc(s.name)}</b></td><td>${esc(s.exam)}</td><td>${num(s.score)} / ${num(s.total)}</td><td>${s.pct}%</td><td><span class="badge ${bc(s.status)}">${s.status}</span></td><td>${fmtDate(s.submittedAt)}</td><td class="right"><button class="btn sm" data-act="att" data-id="${s.id}" ${s.submittedAt ? '' : 'disabled'}>Review and grade</button> <button class="btn sm ghost" data-act="delatt" data-id="${s.id}">Reset</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty"><h3>No results match</h3><p>Results appear here as students submit their exams.</p></div>';
+    el.innerHTML = rows.length ? `<div class="scroll"><table><thead><tr><th>Student</th><th>Exam</th><th>Score</th><th>%</th><th>Status</th><th>Submitted</th><th>Violations</th><th></th></tr></thead><tbody>${rows.map((s) => `<tr><td><b>${esc(s.name)}</b></td><td>${esc(s.exam)}</td><td>${num(s.score)} / ${num(s.total)}</td><td>${s.pct}%</td><td><span class="badge ${bc(s.status)}">${s.status}</span></td><td>${fmtDate(s.submittedAt)}</td><td>${s.violations ? `<span class="badge Fail">${s.violations}</span>` : '0'}</td><td class="right"><button class="btn sm" data-act="att" data-id="${s.id}" ${s.submittedAt ? '' : 'disabled'}>Review and grade</button> <button class="btn sm ghost" data-act="delatt" data-id="${s.id}">Reset</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty"><h3>No results match</h3><p>Results appear here as students submit their exams.</p></div>';
   } catch (e) { if (e.message !== 'Session expired') toast(e.message, 'err'); }
 }
 actions.exp = (b) => busy(b, async () => {
@@ -581,11 +649,12 @@ actions.exp = (b) => busy(b, async () => {
   a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1500);
   toast('Export ready');
 });
+const logBlock = (a) => (a.violations ? `<div class="card pad sm" style="border-left:5px solid var(--mark);margin-bottom:14px"><b>Security log: ${a.violations} violation${a.violations === 1 ? '' : 's'}</b>${a.autoReason === 'violations' ? ' (the exam was submitted automatically)' : ''}<ul style="margin:6px 0 0;padding-left:18px">${(a.violationLog || []).map((v) => `<li>${new Date(v.t).toLocaleTimeString()}: ${esc(VTXT[v.type] || v.type)}</li>`).join('')}</ul></div>` : '');
 async function openAttempt(id) {
   const a = await api(`/api/admin/attempts/${id}`, { as: 'admin' });
   const grader = (q) => (q.type === 'short' ? `<div class="row" style="margin-top:10px"><label style="margin:0" class="sm">Marks awarded</label><input type="number" id="g${q.id}" min="0" max="${q.marks}" step="0.5" value="${q.awarded ?? ''}" style="width:90px;margin:0"><span class="sm mut">of ${num(q.marks)}</span><button class="btn sm pri" data-act="grade" data-a="${a.id}" data-q="${q.id}">Save marks</button></div>` : '');
   modal(`<div class="row between"><div><h3 style="margin:0">${esc(a.name)}</h3><span class="mut sm">${esc(a.exam)}</span></div><span class="badge ${bc(a.status)}">${a.status}</span></div>
-    <p style="margin:10px 0 16px"><b>${num(a.score)}</b> / ${num(a.total)} marks · ${a.pct}% · pass mark ${num(a.passMarks)}</p>${a.review.map((q, i) => revHTML(q, i, grader(q))).join('')}
+    <p style="margin:10px 0 16px"><b>${num(a.score)}</b> / ${num(a.total)} marks · ${a.pct}% · pass mark ${num(a.passMarks)}</p>${logBlock(a)}${a.review.map((q, i) => revHTML(q, i, grader(q))).join('')}
     <div class="row end"><button class="btn pri" data-act="mclose">Close</button></div>`, true);
 }
 actions.att = (b) => busy(b, () => openAttempt(b.dataset.id));
@@ -602,7 +671,7 @@ actions.delatt = async (b) => {
 
 /* ---------- router ---------- */
 async function route() {
-  clearTimers(); closeModal(); window.onbeforeunload = null;
+  clearTimers(); closeModal(); lockStop(); window.onbeforeunload = null;
   let p = location.hash.replace(/^#\/?/, '').split('/');
   const onAdmin = location.pathname.replace(/\/+$/, '') === '/admin';
   if (onAdmin && p[0] !== 'admin') p = ['admin'];
