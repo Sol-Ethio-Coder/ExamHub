@@ -6,7 +6,7 @@ Express API + vanilla-JS front end, using a **Turso (libSQL) database**, so it r
 
 Admin area: open **`/admin`** (it is not linked from the public homepage).
 
-**Business model:** ExamHub is multi-school. Schools sign up for a free trial, subscribe to a plan, and each school has a school administrator and private teacher accounts. You, the platform owner, manage schools, payments and enquiries. See *Running it as a business* below.
+**Multiple teachers:** the account created from `ADMIN_USERNAME` / `ADMIN_PASSWORD` is the **main admin**. It can add teacher accounts under the **Teachers** tab. Every teacher works privately: they only see and manage their own exams, students' results, live monitor and exports.
 
 ---
 ## 1. Run locally
@@ -82,25 +82,13 @@ Teachers see violations on the **Live monitor** (as they happen), in the **Resul
 
 **What this can and cannot do.** A website can detect and record that a student left the exam page, but it cannot stop them from opening another tab, a second device or a phone, and browsers do not let pages block shortcuts such as Ctrl+T or Alt+Tab. Strict mode is a strong deterrent with an audit trail. For the strongest control, require Safe Exam Browser and, for high-stakes exams, invigilate the room. The Safe Exam Browser check uses the browser's identifier, which a determined student could fake. iPhones do not support the full-screen API, so on iPhones the tab-switch and app-switch detection still works but full screen is not enforced.
 
-## Running it as a business (schools, plans and billing)
-**Three kinds of accounts**
-- **Platform owner** (you): the account created from `ADMIN_USERNAME` / `ADMIN_PASSWORD`. Tabs: *Overview* (schools, trials, paying schools, revenue this month), *Schools* (add, change plan, extend, suspend, add administrators, delete), *Payments* (approve or reject upgrade requests) and *Leads* (demo requests from the website). You cannot see any school's exams or results.
-- **School administrator**: created when a school signs up (or by you). Manages that school's teachers (add, disable, reset password, delete) and **Billing** (plan, usage meters, upgrade requests). Also works as a teacher.
-- **Teacher**: creates exams, sees live students and results. Private: teachers cannot see each other's work.
+## Teacher accounts (multiple admins)
+1. Sign in at `/admin` as the main admin and open **Teachers → Add teacher**. Enter the teacher's name, a username and a temporary password (a random one is suggested), then give those details to the teacher.
+2. Each teacher signs in at the same `/admin` address, creates their own exams and shares their own exam codes. Teachers cannot see, edit, grade, export or delete anyone else's exams or results. The main admin cannot see them either, except through the Teachers list (name, username, number of exams, status).
+3. **Reset password** replaces a forgotten password. **Disable** blocks sign-in immediately (existing sessions stop working) without deleting the teacher's data, and **Enable** restores access. **Delete** removes an account, but only when it owns no exams.
+4. Teachers can change their own password from **Dashboard → Change password**.
 
-**Customer journey.** A school opens your website, starts the **free trial** (`#/signup`, no card), adds teachers and runs exams within trial limits. When it wants to continue it opens **Billing → Choose this plan**, pays you using your instructions, and submits the payment reference. In **Payments** you check the money arrived and press **Approve**: the plan activates and the end date moves forward. You can also add a school by hand or extend or suspend any school.
-
-**Set your plans and prices.** Edit `plans.js`: names, monthly prices, limits (teachers, exams, student exams per month), trial length and the 12-month discount. The pricing section and billing pages update automatically. *The prices in the file are placeholders.*
-
-**Your details.** Optional environment variables: `BRAND_NAME`, `CONTACT_EMAIL`, `CONTACT_PHONE`, `PAYMENT_INSTRUCTIONS` (see `.env.example`). Edit `public/terms.html` and `public/privacy.html` (templates: fill the [PLACEHOLDERS] and have them reviewed).
-
-**What happens when a subscription ends or a limit is reached.** Results stay viewable and exportable. Creating, editing or publishing exams, adding teachers beyond the plan, and students starting new exams are blocked with a clear message, and teachers see a banner. Renewing in Billing restores everything. A trial ends after the trial days; a suspended school is blocked the same way.
-
-**Payments.** This version uses manual confirmation (bank transfer or mobile money plus a reference number), which suits markets where card gateways are not available. It can be extended with an online gateway later.
-
-**Upgrading an existing single-school site.** Deploy this version over the old one. The database upgrades itself: your existing admin becomes the platform owner, and existing teachers move into a "Default School" with a one-year School plan, keeping all their exams and results. Then use **Schools → Add administrator** to give that school an administrator account.
-
-**Before you launch:** set `JWT_SECRET`, a strong `ADMIN_PASSWORD`, your contact details and payment instructions; review `plans.js` prices; complete the Terms and Privacy pages; test the whole journey with a test school; and keep regular backups of your Turso database.
+**Upgrading an existing site:** deploy this version over the old one. The database upgrades itself on the first request: your existing admin becomes the main admin and keeps all existing exams and results. No data is lost.
 
 ## AI question generator
 In the exam editor press **Generate with AI**, describe what you want (topic, grade, number of questions, difficulty, language, question types, extra instructions, or paste your own lesson text) and the questions land in the editor for you to review before saving.

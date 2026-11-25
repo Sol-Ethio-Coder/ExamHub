@@ -53,12 +53,6 @@ const SCHEMA = [
     UNIQUE(exam_id, name_key))`,
   `CREATE TABLE IF NOT EXISTS answers(attempt_id INTEGER NOT NULL, question_id INTEGER NOT NULL, response TEXT, awarded REAL,
     PRIMARY KEY(attempt_id, question_id))`,
-  `CREATE TABLE IF NOT EXISTS schools(id INTEGER PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'trial', plan TEXT NOT NULL DEFAULT 'trial',
-    trial_ends_at INTEGER, paid_until INTEGER, contact_name TEXT DEFAULT '', contact_email TEXT DEFAULT '', phone TEXT DEFAULT '', created_at INTEGER NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY, school_id INTEGER NOT NULL, plan TEXT NOT NULL, months INTEGER NOT NULL, amount REAL NOT NULL,
-    reference TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL, decided_at INTEGER)`,
-  `CREATE TABLE IF NOT EXISTS leads(id INTEGER PRIMARY KEY, school_name TEXT DEFAULT '', contact_name TEXT NOT NULL, email TEXT DEFAULT '', phone TEXT DEFAULT '',
-    message TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'new', created_at INTEGER NOT NULL)`,
   'CREATE INDEX IF NOT EXISTS idx_q_exam ON questions(exam_id)',
   'CREATE INDEX IF NOT EXISTS idx_a_exam ON attempts(exam_id)',
 ];
@@ -77,8 +71,6 @@ function init() {
     await addCol('admins', 'disabled', 'INTEGER NOT NULL DEFAULT 0');
     await addCol('admins', 'created_at', 'INTEGER');
     await addCol('exams', 'owner_id', 'INTEGER');
-    await addCol('admins', 'school_id', 'INTEGER');
-    await addCol('exams', 'school_id', 'INTEGER');
     await addCol('exams', 'lockdown', 'INTEGER NOT NULL DEFAULT 0');
     await addCol('exams', 'max_violations', 'INTEGER NOT NULL DEFAULT 3');
     await addCol('exams', 'require_seb', 'INTEGER NOT NULL DEFAULT 0');
@@ -98,10 +90,6 @@ function init() {
     await db.batch([
       "UPDATE admins SET role='superadmin' WHERE id=(SELECT MIN(id) FROM admins) AND NOT EXISTS (SELECT 1 FROM admins WHERE role='superadmin')",
       "UPDATE exams SET owner_id=(SELECT id FROM admins WHERE role='superadmin' ORDER BY id LIMIT 1) WHERE owner_id IS NULL",
-      // upgrade from the single-school version: existing teachers move into a "Default School" with a one-year School plan
-      { sql: "INSERT INTO schools(name,status,plan,paid_until,created_at) SELECT 'Default School','active','school',?,? WHERE EXISTS (SELECT 1 FROM admins WHERE role='teacher' AND school_id IS NULL) AND NOT EXISTS (SELECT 1 FROM schools)", args: [now() + 365 * 86400000, now()] },
-      "UPDATE admins SET school_id=(SELECT MIN(id) FROM schools) WHERE role='teacher' AND school_id IS NULL",
-      "UPDATE exams SET school_id=(SELECT school_id FROM admins WHERE admins.id=exams.owner_id) WHERE school_id IS NULL",
     ], 'write');
   })().catch((e) => { ready = null; throw e; });
   return ready;
@@ -165,7 +153,7 @@ function cleanQs(list) {
     return { type, text: text.slice(0, 2000), options: options && JSON.stringify(options), answer, marks, explanation: String(q.explanation || '').trim().slice(0, 1000) };
   });
 }
-async function saveExam(id, b, ownerId, schoolId) {
+async function saveExam(id, b, ownerId) {
   const e = cleanExam(b);
   const qs = b.questions !== undefined ? cleanQs(b.questions) : null;
   const total = qs ? qs.reduce((t, q) => t + q.marks, 0) : id !== null ? await totalMarks(id) : 0;
@@ -175,7 +163,7 @@ async function saveExam(id, b, ownerId, schoolId) {
   let code = null;
   if (id === null) {
     code = await genCode();
-    stmts.push({ sql: 'INSERT INTO exams(title,subject,instructions,code,duration,pass_marks,start_at,end_at,published,created_at,owner_id,lockdown,max_violations,require_seb,school_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', args: [e.title, e.subject, e.instructions, code, e.duration, e.pass_marks, e.start_at, e.end_at, e.published, now(), ownerId, e.lockdown, e.max_violations, e.require_seb, schoolId || null] });
+    stmts.push({ sql: 'INSERT INTO exams(title,subject,instructions,code,duration,pass_marks,start_at,end_at,published,created_at,owner_id,lockdown,max_violations,require_seb) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)', args: [e.title, e.subject, e.instructions, code, e.duration, e.pass_marks, e.start_at, e.end_at, e.published, now(), ownerId, e.lockdown, e.max_violations, e.require_seb] });
   } else {
     if (!(await one('SELECT 1 x FROM exams WHERE id=? AND owner_id=?', [id, ownerId]))) throw err(404, 'Exam not found.');
     stmts.push({ sql: 'UPDATE exams SET title=?,subject=?,instructions=?,duration=?,pass_marks=?,start_at=?,end_at=?,published=?,lockdown=?,max_violations=?,require_seb=? WHERE id=?', args: [e.title, e.subject, e.instructions, e.duration, e.pass_marks, e.start_at, e.end_at, e.published, e.lockdown, e.max_violations, e.require_seb, id] });
@@ -444,53 +432,6 @@ async function callAI(prompt) {
   return text;
 }
 
-/* ---------- business: schools, plans, billing ---------- */
-const PLANS = require('./plans');
-const DAY = 86400000;
-const monthStart = () => { const d = new Date(); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1); };
-const planOf = (key) => PLANS.plans[key] || PLANS.plans.trial;
-const planList = () => Object.entries(PLANS.plans).map(([key, p]) => ({ key, ...p }));
-const amountFor = (key, months) => PLANS.plans[key].price * (months === 12 ? PLANS.annualMonthsPaid : months);
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-const USER_RE = /^[A-Za-z0-9._@+-]{3,80}$/;
-function schoolState(s) {
-  if (!s) return { active: true, state: 'none', daysLeft: 0 };
-  if (s.status === 'suspended') return { active: false, state: 'suspended', daysLeft: 0 };
-  const end = s.status === 'trial' ? s.trial_ends_at : s.paid_until;
-  const left = (end || 0) - now();
-  return { active: left > 0, state: left > 0 ? s.status : 'expired', endsAt: end || null, daysLeft: Math.max(0, Math.ceil(left / DAY)) };
-}
-const schoolView = (s) => s && { id: s.id, name: s.name, plan: s.plan, planName: planOf(s.plan).name, status: s.status, trial_ends_at: s.trial_ends_at, paid_until: s.paid_until, ...schoolState(s) };
-async function schoolUsage(id) {
-  return {
-    teachers: (await one("SELECT COUNT(*) c FROM admins WHERE school_id=? AND role='teacher'", [id])).c,
-    exams: (await one('SELECT COUNT(*) c FROM exams WHERE school_id=?', [id])).c,
-    attemptsMonth: (await one('SELECT COUNT(*) c FROM attempts a JOIN exams e ON e.id=a.exam_id WHERE e.school_id=? AND a.started_at>=?', [id, monthStart()])).c,
-  };
-}
-// Blocks creating/publishing when a school's subscription has ended, or when a plan limit is reached. The platform owner has no school and is never blocked.
-async function guardSchool(req, opts = {}) {
-  const s = req.school;
-  if (!s) return;
-  const st = schoolState(s);
-  if (!st.active) throw err(402, st.state === 'suspended' ? 'This school account is suspended. Please contact the platform owner.' : 'Your school subscription has ended. Renew it under Billing to create, edit or publish exams.');
-  const plan = planOf(s.plan);
-  if (opts.ai && !plan.ai) throw err(403, 'AI question generation is not included in your plan.');
-  if (opts.creating && (await one('SELECT COUNT(*) c FROM exams WHERE school_id=?', [s.id])).c >= plan.maxExams) throw err(403, `Your ${plan.name} plan allows ${plan.maxExams} exams. Delete old exams or upgrade under Billing.`);
-}
-async function createSchoolWithAdmin(o) {
-  if (await one('SELECT 1 x FROM admins WHERE lower(username)=lower(?)', [o.username])) throw err(409, 'That username or email is already registered.');
-  const t = now();
-  const trial = o.plan === 'trial';
-  const r = await run('INSERT INTO schools(name,status,plan,trial_ends_at,paid_until,contact_name,contact_email,phone,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
-    [o.schoolName, trial ? 'trial' : 'active', o.plan, trial ? t + PLANS.trialDays * DAY : null, trial ? null : t + (o.months || 1) * 30 * DAY, o.adminName, o.email || '', o.phone || '', t]);
-  const schoolId = Number(r.lastInsertRowid);
-  try {
-    const a = await run("INSERT INTO admins(username,hash,role,name,school_id,created_at) VALUES(?,?,'school_admin',?,?,?)", [o.username, bcrypt.hashSync(o.password, 12), o.adminName, schoolId, t]);
-    return { schoolId, adminId: Number(a.lastInsertRowid) };
-  } catch { await run('DELETE FROM schools WHERE id=?', [schoolId]); throw err(409, 'That username or email is already registered.'); }
-}
-
 /* ---------- app ---------- */
 const app = express();
 app.disable('x-powered-by');
@@ -529,35 +470,6 @@ const joinLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, standardHeaders: t
 
 app.get('/api/health', wrap(async (req, res) => { await one('SELECT 1 x'); res.json({ ok: true, serverless: SERVERLESS }); }));
 
-/* ----- public website: pricing, sign-up and contact ----- */
-const signupLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 8, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many sign-ups from this network. Please try again later.' } });
-const contactLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many messages. Please try again later.' } });
-const clip = (v, m) => String(v ?? '').trim().slice(0, m);
-app.get('/api/public/config', (req, res) => res.json({
-  brand: process.env.BRAND_NAME || 'ExamHub', contactEmail: process.env.CONTACT_EMAIL || '', contactPhone: process.env.CONTACT_PHONE || '',
-  currency: PLANS.currency, trialDays: PLANS.trialDays, annualMonthsPaid: PLANS.annualMonthsPaid, plans: planList(),
-  paymentInstructions: process.env.PAYMENT_INSTRUCTIONS || PLANS.paymentInstructions,
-}));
-app.post('/api/public/signup', signupLimiter, wrap(async (req, res) => {
-  const schoolName = clip(req.data.school_name, 120), adminName = clip(req.data.admin_name, 80), email = clip(req.data.email, 120).toLowerCase();
-  const phone = clip(req.data.phone, 40), password = String(req.data.password || '');
-  if (schoolName.length < 2) throw err(400, 'Enter your school name.');
-  if (adminName.length < 2) throw err(400, 'Enter your name.');
-  if (!EMAIL_RE.test(email)) throw err(400, 'Enter a valid email address.');
-  if (password.length < 8) throw err(400, 'Password must be at least 8 characters.');
-  const { adminId } = await createSchoolWithAdmin({ schoolName, adminName, username: email, email, phone, password, plan: 'trial' });
-  res.status(201).json({ token: jwt.sign({ id: adminId }, SECRET, { expiresIn: '8h' }) });
-}));
-app.post('/api/public/contact', contactLimiter, wrap(async (req, res) => {
-  const o = { school: clip(req.data.school_name, 120), name: clip(req.data.contact_name, 80), email: clip(req.data.email, 120), phone: clip(req.data.phone, 40), msg: clip(req.data.message, 2000) };
-  if (o.name.length < 2) throw err(400, 'Enter your name.');
-  if (!EMAIL_RE.test(o.email) && o.phone.length < 6) throw err(400, 'Enter an email address or phone number so we can reach you.');
-  await run('INSERT INTO leads(school_name,contact_name,email,phone,message,status,created_at) VALUES(?,?,?,?,?,?,?)', [o.school, o.name, o.email, o.phone, o.msg, 'new', now()]);
-  res.status(201).json({ ok: true });
-}));
-
-
-
 /* ----- student ----- */
 async function openExam(nameRaw, codeRaw, req) {
   const name = String(nameRaw || '').trim().replace(/\s+/g, ' ');
@@ -566,14 +478,6 @@ async function openExam(nameRaw, codeRaw, req) {
   const exam = code && (await one('SELECT * FROM exams WHERE code=? AND published=1', [code]));
   if (!exam) throw err(404, 'That exam code is not valid.');
   if (exam.require_seb && !isSEB(req)) throw err(403, SEB_MSG);
-  if (exam.school_id) {
-    const sch = await one('SELECT * FROM schools WHERE id=?', [exam.school_id]);
-    if (sch) {
-      if (!schoolState(sch).active) throw err(403, 'This exam is unavailable because the school subscription has ended. Please tell your teacher.');
-      if ((await one('SELECT COUNT(*) c FROM attempts a JOIN exams e ON e.id=a.exam_id WHERE e.school_id=? AND a.started_at>=?', [sch.id, monthStart()])).c >= planOf(sch.plan).maxAttemptsPerMonth) throw err(403, 'This school has reached its monthly exam limit. Please tell your teacher.');
-      exam.school_name = sch.name;
-    }
-  }
   if (exam.start_at && now() < exam.start_at) throw err(403, `This exam opens on ${new Date(exam.start_at).toUTCString()}.`);
   if (exam.end_at && now() > exam.end_at) throw err(403, 'This exam is closed.');
   const key = norm(name);
@@ -584,7 +488,7 @@ async function openExam(nameRaw, codeRaw, req) {
 app.post('/api/student/lookup', joinLimiter, wrap(async (req, res) => {
   const { exam } = await openExam(req.data.name, req.data.code, req);
   const n = (await one('SELECT COUNT(*) c FROM questions WHERE exam_id=?', [exam.id])).c;
-  res.json({ title: exam.title, subject: exam.subject, instructions: exam.instructions, duration: exam.duration, questions: n, total: await totalMarks(exam.id), passMarks: exam.pass_marks, lockdown: !!exam.lockdown, maxViolations: exam.max_violations, requireSeb: !!exam.require_seb, school: exam.school_name || '' });
+  res.json({ title: exam.title, subject: exam.subject, instructions: exam.instructions, duration: exam.duration, questions: n, total: await totalMarks(exam.id), passMarks: exam.pass_marks, lockdown: !!exam.lockdown, maxViolations: exam.max_violations, requireSeb: !!exam.require_seb });
 }));
 app.post('/api/student/start', joinLimiter, wrap(async (req, res) => {
   const { exam, name, key } = await openExam(req.data.name, req.data.code, req);
@@ -607,10 +511,10 @@ const studentAuth = wrap(async (req, res, next) => {
 app.get('/api/student/attempt', studentAuth, wrap(async (req, res) => {
   const a = req.attempt;
   if (a.submitted_at) return res.json({ submitted: true });
-  const exam = await one('SELECT title,subject,instructions,duration,lockdown,max_violations,(SELECT name FROM schools WHERE id=exams.school_id) school FROM exams WHERE id=?', [a.exam_id]);
+  const exam = await one('SELECT title,subject,instructions,duration,lockdown,max_violations FROM exams WHERE id=?', [a.exam_id]);
   const questions = (await all('SELECT id,type,text,options,marks FROM questions WHERE exam_id=? ORDER BY pos', [a.exam_id])).map(parseQ);
   const answers = Object.fromEntries((await all('SELECT question_id,response FROM answers WHERE attempt_id=?', [a.id])).map((r) => [r.question_id, r.response]));
-  res.json({ exam: { title: exam.title, subject: exam.subject, instructions: exam.instructions, duration: exam.duration, lockdown: !!exam.lockdown, maxViolations: exam.max_violations, school: exam.school || '' }, violations: a.violations, name: a.name, questions, answers, remaining: a.deadline - now() });
+  res.json({ exam: { title: exam.title, subject: exam.subject, instructions: exam.instructions, duration: exam.duration, lockdown: !!exam.lockdown, maxViolations: exam.max_violations }, violations: a.violations, name: a.name, questions, answers, remaining: a.deadline - now() });
 }));
 // Security events from the student's browser in strict (secure) mode.
 const VIOLATION_TYPES = ['tab_hidden', 'window_blur', 'fullscreen_exit'];
@@ -671,164 +575,55 @@ app.post('/api/admin/login', loginLimiter, wrap(async (req, res) => {
   if (u.disabled) throw err(403, 'This account has been disabled. Contact the main administrator.');
   res.json({ token: jwt.sign({ id: u.id }, SECRET, { expiresIn: '8h' }), username: u.username, name: u.name, role: u.role });
 }));
-// Every admin request is checked against the database, so disabled or deleted accounts lose access immediately.
+// Every admin request is checked against the database, so disabled or deleted teachers lose access immediately.
 app.use('/api/admin', wrap(async (req, res, next) => {
   let payload;
   try { payload = jwt.verify((req.get('authorization') || '').replace(/^Bearer /, ''), SECRET); } catch { throw err(401, 'Please sign in again.'); }
-  const a = await one(`SELECT a.id, a.username, a.name, a.role, a.disabled, a.school_id, s.name school_name, s.status school_status, s.plan school_plan, s.trial_ends_at, s.paid_until
-    FROM admins a LEFT JOIN schools s ON s.id=a.school_id WHERE a.id=?`, [payload.id]);
+  const a = await one('SELECT id,username,name,role,disabled FROM admins WHERE id=?', [payload.id]);
   if (!a || a.disabled) throw err(401, 'Please sign in again.');
   req.admin = a;
-  req.school = a.school_id ? { id: a.school_id, name: a.school_name, status: a.school_status, plan: a.school_plan, trial_ends_at: a.trial_ends_at, paid_until: a.paid_until } : null;
   next();
 }));
 
 
-/* ----- accounts, schools and billing ----- */
-const requireSchoolAdmin = (req, res, next) => (req.admin.role === 'school_admin' && req.admin.school_id ? next() : next(err(403, 'Only the school administrator can do this.')));
-const requireOwner = (req, res, next) => (req.admin.role === 'superadmin' ? next() : next(err(403, 'Only the platform owner can do this.')));
-app.get('/api/admin/me', (req, res) => res.json({ id: req.admin.id, username: req.admin.username, name: req.admin.name, role: req.admin.role, school: schoolView(req.school) }));
-
-// -- teachers of the signed-in school (school administrator only)
-app.get('/api/admin/teachers', requireSchoolAdmin, wrap(async (req, res) => {
-  res.json(await all("SELECT a.id, a.username, a.name, a.role, a.disabled, a.created_at, (SELECT COUNT(*) FROM exams WHERE owner_id=a.id) exams FROM admins a WHERE a.school_id=? ORDER BY (a.role='school_admin') DESC, a.id", [req.admin.school_id]));
+/* ----- teacher accounts (main administrator only) ----- */
+const requireSuper = (req, res, next) => (req.admin.role === 'superadmin' ? next() : next(err(403, 'Only the main administrator can manage teacher accounts.')));
+const USER_RE = /^[A-Za-z0-9._-]{3,40}$/;
+app.get('/api/admin/me', (req, res) => res.json({ id: req.admin.id, username: req.admin.username, name: req.admin.name, role: req.admin.role }));
+app.get('/api/admin/teachers', requireSuper, wrap(async (req, res) => {
+  res.json(await all("SELECT a.id, a.username, a.name, a.role, a.disabled, a.created_at, (SELECT COUNT(*) FROM exams WHERE owner_id=a.id) exams FROM admins a ORDER BY (a.role='superadmin') DESC, a.id"));
 }));
-app.post('/api/admin/teachers', requireSchoolAdmin, wrap(async (req, res) => {
-  const username = clip(req.data.username, 80), name = clip(req.data.name, 80), password = String(req.data.password || '');
-  if (!USER_RE.test(username)) throw err(400, 'Username must be 3–80 characters: letters, numbers, dot, dash, underscore or @.');
+app.post('/api/admin/teachers', requireSuper, wrap(async (req, res) => {
+  const username = String(req.data.username || '').trim();
+  const name = String(req.data.name || '').trim().slice(0, 80);
+  const password = String(req.data.password || '');
+  if (!USER_RE.test(username)) throw err(400, 'Username must be 3–40 characters: letters, numbers, dot, dash or underscore.');
   if (password.length < 8) throw err(400, 'Password must be at least 8 characters.');
-  await guardSchool(req);
-  if ((await schoolUsage(req.school.id)).teachers >= planOf(req.school.plan).maxTeachers) throw err(403, `Your ${planOf(req.school.plan).name} plan allows ${planOf(req.school.plan).maxTeachers} teachers. Upgrade under Billing to add more.`);
   if (await one('SELECT 1 x FROM admins WHERE lower(username)=lower(?)', [username])) throw err(409, 'That username is already taken.');
-  await run("INSERT INTO admins(username,hash,role,name,school_id,created_at) VALUES(?,?,'teacher',?,?,?)", [username, bcrypt.hashSync(password, 12), name, req.admin.school_id, now()]);
+  await run("INSERT INTO admins(username,hash,role,name,created_at) VALUES(?,?,'teacher',?,?)", [username, bcrypt.hashSync(password, 12), name, now()]);
   res.status(201).json({ ok: true });
 }));
-const teacherTarget = async (id, schoolId) => {
-  const t = await one("SELECT * FROM admins WHERE id=? AND school_id=? AND role='teacher'", [id, schoolId]);
+const teacherTarget = async (id) => {
+  const t = await one('SELECT * FROM admins WHERE id=?', [id]);
   if (!t) throw err(404, 'Teacher not found.');
+  if (t.role === 'superadmin') throw err(400, 'The main administrator account cannot be changed here.');
   return t;
 };
-app.put('/api/admin/teachers/:id', requireSchoolAdmin, wrap(async (req, res) => {
-  const t = await teacherTarget(+req.params.id, req.admin.school_id);
+app.put('/api/admin/teachers/:id', requireSuper, wrap(async (req, res) => {
+  const t = await teacherTarget(+req.params.id);
   if (req.data.password !== undefined) {
     const p = String(req.data.password);
     if (p.length < 8) throw err(400, 'Password must be at least 8 characters.');
     await run('UPDATE admins SET hash=? WHERE id=?', [bcrypt.hashSync(p, 12), t.id]);
   }
   if (req.data.disabled !== undefined) await run('UPDATE admins SET disabled=? WHERE id=?', [req.data.disabled ? 1 : 0, t.id]);
-  if (req.data.name !== undefined) await run('UPDATE admins SET name=? WHERE id=?', [clip(req.data.name, 80), t.id]);
+  if (req.data.name !== undefined) await run('UPDATE admins SET name=? WHERE id=?', [String(req.data.name).trim().slice(0, 80), t.id]);
   res.json({ ok: true });
 }));
-app.delete('/api/admin/teachers/:id', requireSchoolAdmin, wrap(async (req, res) => {
-  const t = await teacherTarget(+req.params.id, req.admin.school_id);
+app.delete('/api/admin/teachers/:id', requireSuper, wrap(async (req, res) => {
+  const t = await teacherTarget(+req.params.id);
   if ((await one('SELECT COUNT(*) c FROM exams WHERE owner_id=?', [t.id])).c) throw err(409, 'This teacher still owns exams. Disable the account instead, or ask the teacher to delete their exams first.');
   await run('DELETE FROM admins WHERE id=?', [t.id]);
-  res.json({ ok: true });
-}));
-
-// -- billing (school administrator only)
-app.get('/api/admin/billing', requireSchoolAdmin, wrap(async (req, res) => {
-  const s = await one('SELECT * FROM schools WHERE id=?', [req.admin.school_id]);
-  res.json({
-    school: schoolView(s), usage: await schoolUsage(s.id), limits: planOf(s.plan), plans: planList(), currency: PLANS.currency, annualMonthsPaid: PLANS.annualMonthsPaid,
-    instructions: process.env.PAYMENT_INSTRUCTIONS || PLANS.paymentInstructions,
-    payments: await all('SELECT id,plan,months,amount,reference,status,created_at,decided_at FROM payments WHERE school_id=? ORDER BY id DESC LIMIT 20', [s.id]),
-  });
-}));
-app.post('/api/admin/billing/request', requireSchoolAdmin, wrap(async (req, res) => {
-  const plan = String(req.data.plan || ''), months = Math.round(+req.data.months), reference = clip(req.data.reference, 120);
-  if (!PLANS.plans[plan] || plan === 'trial') throw err(400, 'Choose a plan.');
-  if (![1, 3, 6, 12].includes(months)) throw err(400, 'Choose 1, 3, 6 or 12 months.');
-  if (reference.length < 3) throw err(400, 'Enter the payment reference (transaction number) so we can confirm your payment.');
-  if ((await one("SELECT COUNT(*) c FROM payments WHERE school_id=? AND status='pending'", [req.admin.school_id])).c >= 3) throw err(409, 'You already have pending payment requests. We will confirm them shortly.');
-  await run('INSERT INTO payments(school_id,plan,months,amount,reference,status,created_at) VALUES(?,?,?,?,?,?,?)', [req.admin.school_id, plan, months, amountFor(plan, months), reference, 'pending', now()]);
-  res.status(201).json({ ok: true });
-}));
-
-// -- platform owner: schools, payments, leads
-app.get('/api/admin/platform', requireOwner, wrap(async (req, res) => {
-  const schools = await all('SELECT * FROM schools');
-  const states = schools.map((s) => ({ s, st: schoolState(s) }));
-  res.json({
-    schools: schools.length, trials: states.filter((x) => x.s.status === 'trial' && x.st.active).length,
-    paying: states.filter((x) => x.s.status === 'active' && x.st.active).length, expired: states.filter((x) => !x.st.active && x.s.status !== 'suspended').length, suspended: schools.filter((s) => s.status === 'suspended').length,
-    teachers: (await one("SELECT COUNT(*) c FROM admins WHERE role='teacher'")).c, attemptsMonth: (await one('SELECT COUNT(*) c FROM attempts WHERE started_at>=?', [monthStart()])).c,
-    pendingPayments: (await one("SELECT COUNT(*) c FROM payments WHERE status='pending'")).c, newLeads: (await one("SELECT COUNT(*) c FROM leads WHERE status='new'")).c,
-    revenueMonth: (await one("SELECT COALESCE(SUM(amount),0) c FROM payments WHERE status='approved' AND decided_at>=?", [monthStart()])).c, currency: PLANS.currency,
-  });
-}));
-app.get('/api/admin/schools', requireOwner, wrap(async (req, res) => {
-  const rows = await all(`SELECT s.*, (SELECT COUNT(*) FROM admins WHERE school_id=s.id AND role='teacher') teachers,
-    (SELECT COUNT(*) FROM exams WHERE school_id=s.id) exams,
-    (SELECT COUNT(*) FROM attempts a JOIN exams e ON e.id=a.exam_id WHERE e.school_id=s.id AND a.started_at>=?) attempts_month,
-    (SELECT username FROM admins WHERE school_id=s.id AND role='school_admin' ORDER BY id LIMIT 1) admin_username FROM schools s ORDER BY s.id DESC`, [monthStart()]);
-  res.json(rows.map((s) => ({ ...s, ...schoolState(s), planName: planOf(s.plan).name })));
-}));
-app.post('/api/admin/schools', requireOwner, wrap(async (req, res) => {
-  const schoolName = clip(req.data.school_name, 120), adminName = clip(req.data.admin_name, 80), username = clip(req.data.username, 80), password = String(req.data.password || '');
-  const plan = String(req.data.plan || 'trial'), months = Math.round(+req.data.months) || 1;
-  if (schoolName.length < 2 || adminName.length < 2) throw err(400, 'Enter the school name and the administrator name.');
-  if (!USER_RE.test(username)) throw err(400, 'Username must be 3–80 characters: letters, numbers, dot, dash, underscore or @.');
-  if (password.length < 8) throw err(400, 'Password must be at least 8 characters.');
-  if (!PLANS.plans[plan]) throw err(400, 'Unknown plan.');
-  if (months < 1 || months > 36) throw err(400, 'Months must be between 1 and 36.');
-  await createSchoolWithAdmin({ schoolName, adminName, username, email: EMAIL_RE.test(username) ? username : '', phone: clip(req.data.phone, 40), password, plan, months });
-  res.status(201).json({ ok: true });
-}));
-app.put('/api/admin/schools/:id', requireOwner, wrap(async (req, res) => {
-  const s = await one('SELECT * FROM schools WHERE id=?', [+req.params.id]);
-  if (!s) throw err(404, 'School not found.');
-  const d = req.data; let { plan, status, trial_ends_at: tEnd, paid_until: paid, name } = s;
-  if (d.name !== undefined) { name = clip(d.name, 120); if (name.length < 2) throw err(400, 'Enter a school name.'); }
-  if (d.plan !== undefined) { if (!PLANS.plans[d.plan]) throw err(400, 'Unknown plan.'); plan = d.plan; }
-  if (d.status !== undefined) { if (!['trial', 'active', 'suspended'].includes(d.status)) throw err(400, 'Unknown status.'); status = d.status; }
-  const days = Math.round(+d.extendDays) || 0;
-  if (days < 0 || days > 3650) throw err(400, 'Extension must be between 0 and 3650 days.');
-  if (days) { if (status === 'trial') tEnd = Math.max(now(), tEnd || 0) + days * DAY; else paid = Math.max(now(), paid || 0) + days * DAY; }
-  if (status === 'active' && (paid || 0) <= now()) paid = now() + 30 * DAY;
-  if (status === 'trial' && (tEnd || 0) <= now() && !days) tEnd = now() + PLANS.trialDays * DAY;
-  await run('UPDATE schools SET name=?,plan=?,status=?,trial_ends_at=?,paid_until=? WHERE id=?', [name, plan, status, tEnd || null, paid || null, s.id]);
-  res.json({ ok: true });
-}));
-app.post('/api/admin/schools/:id/admin', requireOwner, wrap(async (req, res) => {
-  const s = await one('SELECT * FROM schools WHERE id=?', [+req.params.id]);
-  if (!s) throw err(404, 'School not found.');
-  const name = clip(req.data.name, 80), username = clip(req.data.username, 80), password = String(req.data.password || '');
-  if (name.length < 2) throw err(400, 'Enter the administrator name.');
-  if (!USER_RE.test(username)) throw err(400, 'Username must be 3–80 characters: letters, numbers, dot, dash, underscore or @.');
-  if (password.length < 8) throw err(400, 'Password must be at least 8 characters.');
-  if (await one('SELECT 1 x FROM admins WHERE lower(username)=lower(?)', [username])) throw err(409, 'That username is already taken.');
-  await run("INSERT INTO admins(username,hash,role,name,school_id,created_at) VALUES(?,?,'school_admin',?,?,?)", [username, bcrypt.hashSync(password, 12), name, s.id, now()]);
-  res.status(201).json({ ok: true });
-}));
-app.delete('/api/admin/schools/:id', requireOwner, wrap(async (req, res) => {
-  const id = +req.params.id;
-  if ((await one('SELECT COUNT(*) c FROM exams WHERE school_id=?', [id])).c) throw err(409, 'This school still has exams. Suspend it instead of deleting it.');
-  await db.batch([{ sql: 'DELETE FROM payments WHERE school_id=?', args: [id] }, { sql: 'DELETE FROM admins WHERE school_id=?', args: [id] }, { sql: 'DELETE FROM schools WHERE id=?', args: [id] }], 'write');
-  res.json({ ok: true });
-}));
-app.get('/api/admin/payments', requireOwner, wrap(async (req, res) => {
-  res.json(await all('SELECT p.*, s.name school_name FROM payments p JOIN schools s ON s.id=p.school_id ORDER BY (p.status=\'pending\') DESC, p.id DESC LIMIT 200'));
-}));
-app.put('/api/admin/payments/:id', requireOwner, wrap(async (req, res) => {
-  const p = await one('SELECT * FROM payments WHERE id=?', [+req.params.id]);
-  if (!p) throw err(404, 'Payment not found.');
-  if (p.status !== 'pending') throw err(409, 'This payment was already decided.');
-  const action = String(req.data.action || '');
-  if (action === 'reject') { await run("UPDATE payments SET status='rejected', decided_at=? WHERE id=?", [now(), p.id]); return res.json({ ok: true }); }
-  if (action !== 'approve') throw err(400, 'Unknown action.');
-  const s = await one('SELECT * FROM schools WHERE id=?', [p.school_id]);
-  const base = Math.max(now(), s.status === 'active' ? s.paid_until || 0 : 0);
-  await db.batch([
-    { sql: "UPDATE schools SET plan=?, status='active', paid_until=? WHERE id=?", args: [p.plan, base + p.months * 30 * DAY, s.id] },
-    { sql: "UPDATE payments SET status='approved', decided_at=? WHERE id=?", args: [now(), p.id] },
-  ], 'write');
-  res.json({ ok: true });
-}));
-app.get('/api/admin/leads', requireOwner, wrap(async (req, res) => res.json(await all('SELECT * FROM leads ORDER BY (status=\'new\') DESC, id DESC LIMIT 300'))));
-app.put('/api/admin/leads/:id', requireOwner, wrap(async (req, res) => {
-  if (!['new', 'contacted', 'closed'].includes(req.data.status)) throw err(400, 'Unknown status.');
-  await run('UPDATE leads SET status=? WHERE id=?', [req.data.status, +req.params.id]);
   res.json({ ok: true });
 }));
 
@@ -863,19 +658,12 @@ app.get('/api/admin/exams/:id', wrap(async (req, res) => {
   if (!e) throw err(404, 'Exam not found.');
   res.json({ ...e, state: examState(e), locked: !!(await one('SELECT 1 x FROM attempts WHERE exam_id=? LIMIT 1', [e.id])), questions: (await all('SELECT * FROM questions WHERE exam_id=? ORDER BY pos', [e.id])).map(parseQ) });
 }));
-app.post('/api/admin/exams', wrap(async (req, res) => {
-  await guardSchool(req, { creating: true });
-  res.status(201).json(await saveExam(null, req.data, req.admin.id, req.admin.school_id));
-}));
-app.put('/api/admin/exams/:id', wrap(async (req, res) => {
-  await guardSchool(req);
-  res.json(await saveExam(+req.params.id, req.data, req.admin.id, req.admin.school_id));
-}));
+app.post('/api/admin/exams', wrap(async (req, res) => res.status(201).json(await saveExam(null, req.data, req.admin.id))));
+app.put('/api/admin/exams/:id', wrap(async (req, res) => res.json(await saveExam(+req.params.id, req.data, req.admin.id))));
 app.post('/api/admin/exams/:id/publish', wrap(async (req, res) => {
   const e = await one('SELECT * FROM exams WHERE id=? AND owner_id=?', [+req.params.id, req.admin.id]);
   if (!e) throw err(404, 'Exam not found.');
   const on = req.data.published ? 1 : 0;
-  if (on) await guardSchool(req);
   if (on && (await totalMarks(e.id)) === 0) throw err(400, 'Add at least one question before publishing.');
   await run('UPDATE exams SET published=? WHERE id=?', [on, e.id]);
   res.json({ ok: true });
@@ -915,7 +703,6 @@ const aiLimiter = rateLimit({ windowMs: 60 * 1000, max: 8, standardHeaders: true
 app.get('/api/admin/ai/status', (req, res) => res.json({ enabled: !!AI_KEY(), model: AI_MODEL(), host: new URL(AI_BASE()).host }));
 app.post('/api/admin/ai/prompt', wrap(async (req, res) => res.json({ prompt: buildPrompt(cleanAiOpts(req.data)) })));
 app.post('/api/admin/ai/generate', aiLimiter, wrap(async (req, res) => {
-  await guardSchool(req, { ai: true });
   const o = cleanAiOpts(req.data);
   if (o.count > 30) throw err(400, 'Automatic generation is limited to 30 questions at a time. Use copy-and-paste for more.');
   const out = parseExamText(cleanAiText(await callAI(buildPrompt(o))));

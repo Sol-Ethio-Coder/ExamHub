@@ -55,9 +55,7 @@ const confirmBox = (title, msg, ok = 'Confirm', danger = false) => new Promise((
   actions.cno = () => { closeModal(); res(false); };
   actions.cyes = () => { closeModal(); res(true); };
 });
-let CFG = { brand: 'ExamHub', currency: 'ETB', trialDays: 14, plans: [], annualMonthsPaid: 10, paymentInstructions: '', contactEmail: '', contactPhone: '' };
-async function loadCfg() { try { CFG = await api('/api/public/config'); } catch { /* defaults */ } document.title = CFG.brand + ' | Online exams for schools'; }
-const head = (extra = '') => `<header class="top"><a class="brand" href="/"><img src="/favicon.svg" alt="">${esc(CFG.brand)}</a><div class="row">${extra}<button class="icon" data-act="theme" aria-label="Toggle dark mode">${document.documentElement.dataset.theme === 'dark' ? '☀️' : '🌙'}</button></div></header>`;
+const head = (extra = '') => `<header class="top"><a class="brand" href="/"><img src="/favicon.svg" alt="">ExamHub</a><div class="row">${extra}<button class="icon" data-act="theme" aria-label="Toggle dark mode">${document.documentElement.dataset.theme === 'dark' ? '☀️' : '🌙'}</button></div></header>`;
 const failView = (m) => `${head()}<div class="empty"><h2>Something went wrong</h2><p>${esc(m)}</p><button class="btn pri" data-act="reload">Try again</button></div>`;
 
 document.addEventListener('click', (e) => { const t = e.target.closest('[data-act]'); if (t && actions[t.dataset.act]) actions[t.dataset.act](t, e); });
@@ -79,75 +77,58 @@ const ICONS = {
   chart: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
   eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
   download: '<path d="M12 3v12M7 10l5 5 5-5M4 21h16"/>',
-  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.5a3.5 3.5 0 010 7M18 14.3c2.2.6 3.5 2.4 3.5 5.7"/>',
-  lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/>',
-  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>',
 };
 const ico = (n) => `<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n]}</svg>`;
 const FEATS = [
-  ['file', 'Build exams in minutes', 'Write questions, import a Word or PDF paper, or generate questions with AI. Multiple choice, true/false and short answer.'],
-  ['shield', 'Secure exam mode', 'Full screen, tab-switch detection, automatic submission after repeated violations, and optional Safe Exam Browser.'],
-  ['bolt', 'Instant marking', 'Objective questions are marked the moment students submit. Teachers grade short answers in one click.'],
-  ['users', 'Private teacher accounts', 'Every teacher has their own login and sees only their own exams, students and results.'],
-  ['chart', 'Live monitoring and reports', 'Watch students in real time, then export results to CSV, Excel or PDF.'],
-  ['key', 'One code, no student accounts', 'Students enter their name and a single exam code. Nothing to install and nothing to register.'],
+  ['clock', 'Live countdown timer', 'A clear timer that turns amber, then red, as time runs low and submits your work automatically at zero.'],
+  ['key', 'One code for the whole class', 'Your teacher shares a single exam code. Type your name and the code. No account, no password.'],
+  ['list', 'Easy question navigation', 'Jump to any question, see what you have answered, and move back and forth freely.'],
+  ['refresh', 'Refresh-proof', 'Answers save as you go. Reload the page or lose signal and carry on where you stopped.'],
+  ['bolt', 'Instant results', 'Objective questions are marked the moment you submit, with score, percentage and pass or fail.'],
+  ['eye', 'Detailed answer review', 'See every correct answer and explanation so each mistake becomes something you learn from.'],
+  ['phone', 'Works on any device', 'Designed for phones, tablets and school computers alike, with large touch-friendly controls.'],
+  ['moon', 'Light and dark mode', 'Switch themes to stay comfortable during long exams. Your choice is remembered.'],
+  ['shield', 'Fair by design', 'One attempt per student, a server-side clock, and answers locked once submitted.'],
 ];
-const SECURITY = [
-  ['clock', 'Server-side timer', 'The clock runs on the server, so refreshing or closing the page never gives extra time.'],
-  ['lock', 'One attempt per student', 'Names are checked per exam, answers lock on submission, and a teacher can reset an attempt if needed.'],
-  ['eye', 'Violation log', 'Every tab switch, window change or full-screen exit is recorded with a time stamp for the teacher.'],
-  ['shield', 'Safe Exam Browser', 'Require the free Safe Exam Browser for high-stakes exams, on top of strict mode.'],
+const TEACH = [
+  ['file', 'Import from PDF or Word', 'Upload an existing paper and it is turned into a ready-to-edit exam in seconds.'],
+  ['chart', 'Live monitoring', 'See who is taking the exam, how far they have got and how much time is left.'],
+  ['download', 'Export results', 'Download CSV, Excel or PDF reports, filtered by exam, status or student.'],
+  ['list', 'AI-assisted questions', 'Generate questions with AI, or write multiple choice, true/false and short answers yourself, with marks and explanations.'],
+  ['clock', 'Scheduling', 'Set open and close times, duration, passing marks and instructions for each exam.'],
+  ['bolt', 'Manual grading', 'Review short answers and award marks. The final score updates straight away.'],
 ];
 const FAQ = [
-  ['Is there a free trial?', 'Yes. Every school gets a free trial with no payment card. You can create exams, add teachers and run real exams within the trial limits.'],
-  ['How do we pay?', 'Choose a plan under Billing, pay using the instructions shown, and enter the payment reference. We confirm the payment and activate your plan.'],
-  ['What happens if our subscription ends?', 'Your results stay available to view and export. Creating or publishing exams, and students starting new exams, pause until the subscription is renewed.'],
-  ['Do students need accounts or an app?', 'No. Students open the website, type their full name and the exam code, and start. It works in any modern browser on phones, tablets and computers.'],
-  ['Can teachers see each other\'s exams?', 'No. Each teacher\'s exams, students and results are private to them. The school administrator manages teacher accounts but does not see their exam content.'],
-  ['Can students still cheat?', 'Strict mode discourages and records cheating, and Safe Exam Browser makes it much harder. No website can make it impossible, so for high-stakes exams we recommend invigilation as well.'],
-  ['What internet connection do we need?', 'Students need a working connection while taking the exam. Answers are saved as they go, and a refresh or a short drop in connection does not lose their place.'],
+  ['Do I need an account?', 'No. Enter your full name and the exam code from your teacher. That is all.'],
+  ['What happens when the timer reaches zero?', 'Your answers are submitted automatically. The clock runs on the server, so it cannot be paused by refreshing or closing the page.'],
+  ['What if my internet drops or I refresh the page?', 'Your answers are saved as you go. Open the site again on the same device and you will continue where you left off, with the correct time remaining.'],
+  ['Can I change my answers?', 'Yes, as often as you like until you submit. Use the review step to check unanswered questions first.'],
+  ['When do I see my results?', 'Immediately after submitting. Multiple choice and true/false are marked instantly. Short answers may show as awaiting your teacher until they are graded.'],
+  ['Can I take the exam twice?', 'No. Each student can submit an exam once. If something went wrong, ask your teacher to reset your attempt.'],
 ];
 function viewJoin() {
   if (localStorage.getItem('attemptToken')) { location.hash = '#/exam'; return; }
   const card = ([i, t, d], k) => `<article class="card feat rv" style="--d:${(k % 3) * 80}ms"><span class="fi">${ico(i)}</span><h3>${t}</h3><p class="mut" style="margin:0">${d}</p></article>`;
-  const nav = ['features:Features', 'security:Security', 'pricing:Pricing', 'faq:FAQ', 'contact:Contact'].map((s) => { const [k, l] = s.split(':'); return `<button class="btn ghost sm" data-act="scroll" data-to="${k}">${l}</button>`; }).join('');
-  const money = (n) => `${Number(n).toLocaleString()} ${CFG.currency}`;
-  const planCard = (p, k) => `<article class="card plan rv ${p.key === 'school' ? 'pop' : ''}" style="--d:${k * 80}ms">${p.key === 'school' ? '<span class="badge open pill">Most popular</span>' : ''}<h3>${esc(p.name)}</h3>
-    <div class="price"><b>${p.price ? Number(p.price).toLocaleString() : 'Free'}</b>${p.price ? `<span> ${CFG.currency} / month</span>` : `<span> for ${CFG.trialDays} days</span>`}</div>
-    <ul><li>Up to <b>${p.maxTeachers}</b> teachers</li><li>Up to <b>${p.maxExams}</b> exams</li><li><b>${Number(p.maxAttemptsPerMonth).toLocaleString()}</b> student exams per month</li><li>Secure exam mode</li><li>Import from Word or PDF</li>${p.ai ? '<li>AI question generator</li>' : ''}<li>Results export (CSV, Excel, PDF)</li></ul>
-    <a class="btn ${p.key === 'school' ? 'pri' : ''} block" href="#/signup">${p.price ? 'Start free trial' : 'Start free trial'}</a></article>`;
-  app.innerHTML = head(`<nav class="row hide-sm">${nav}</nav><a class="btn ghost sm" href="/admin">School sign in</a><a class="btn pri sm" href="#/signup">Free trial</a>`) + `<main>
-  <section class="join"><div><p class="eyebrow">Online exams for schools</p><h1>Run secure online exams for your whole school.</h1><p class="lede">Create exams in minutes, share one code and get instant marking. Teachers work privately and students need no accounts.</p>
-  <div class="row" style="gap:12px;margin-top:22px"><a class="btn pri" href="#/signup">Start free trial</a><button class="btn ghost" data-act="scroll" data-to="contact">Book a demo</button></div>
-  <div class="chips"><span>${CFG.trialDays}-day free trial</span><span>No card needed</span><span>Any device</span><span>Instant results</span></div></div>
-  <form id="join" class="sheet" novalidate><h3 style="margin:0 0 16px">Student? Start your exam</h3><label>Full name<input name="name" maxlength="80" autocomplete="name" placeholder="Abebe Kebede" required></label>
+  const nav = ['features:Features', 'how:How it works', 'teachers:For teachers', 'faq:FAQ'].map((s) => { const [k, l] = s.split(':'); return `<button class="btn ghost sm" data-act="scroll" data-to="${k}">${l}</button>`; }).join('');
+  app.innerHTML = head(`<nav class="row hide-sm">${nav}</nav>`) + `<main>
+  <section class="join"><div><h1>Sit your exam. No account needed.</h1><p class="lede">Write your full name and the code your teacher gave you. The timer only starts after you confirm.</p>
+  <div class="chips"><span>No sign-up</span><span>Auto-submit</span><span>Instant results</span><span>Any device</span></div>
+  <button class="btn ghost" data-act="scroll" data-to="how" style="margin-top:22px">See how it works</button></div>
+  <form id="join" class="sheet" novalidate><label>Full name<input name="name" maxlength="80" autocomplete="name" placeholder="Abebe Kebede" required></label>
   <label>Exam code<input name="code" class="code" maxlength="12" autocapitalize="characters" autocomplete="off" placeholder="K7M2QX9R" required></label>
   <button class="btn pri block">Continue</button></form></section>
-  <section class="band"><div class="band-in">${[['users', 'Private teacher accounts'], ['shield', 'Secure exam mode'], ['bolt', 'Instant marking'], ['phone', 'Phones and computers']].map(([i, t]) => `<div class="rv"><span class="fi">${ico(i)}</span><b>${t}</b></div>`).join('')}</div></section>
-  <section class="sec" id="features"><div class="sec-in"><h2 class="rv">Everything your school needs to run exams online</h2><p class="mut rv">From writing the paper to publishing results, in one simple platform.</p><div class="grid g3">${FEATS.map(card).join('')}</div></div></section>
-  <section class="sec alt" id="how"><div class="sec-in"><h2 class="rv">Up and running in three steps</h2><p class="mut rv">No installation, no servers and no setup fees.</p><div class="grid g3">${[['Create your school account', `Start a ${CFG.trialDays}-day free trial with your email. No payment card needed.`], ['Add teachers and build exams', 'Invite your teachers, then create exams by typing, importing a Word or PDF paper, or using the AI generator.'], ['Share the code', 'Give students the exam code. They enter their name and sit the exam while you watch live. Results are ready the moment they submit.']].map(([t, d], k) => `<article class="card feat step rv" style="--d:${k * 90}ms"><span class="num">${k + 1}</span><h3>${t}</h3><p class="mut" style="margin:0">${d}</p></article>`).join('')}</div></div></section>
-  <section class="sec" id="security"><div class="sec-in"><h2 class="rv">Built to keep exams fair</h2><p class="mut rv">Deterrence, detection and a clear record for every attempt.</p><div class="grid g2">${SECURITY.map(card).join('')}</div></div></section>
-  <section class="sec alt" id="pricing"><div class="sec-in"><h2 class="rv">Simple pricing for schools</h2><p class="mut rv">Start free, then pick the plan that fits your school. Prices are per month in ${CFG.currency}. Pay for 12 months at once and get a discount.</p>
-  <div class="pricegrid">${CFG.plans.map(planCard).join('')}</div><p class="sm mut ctr rv" style="margin-top:18px">${esc(CFG.paymentInstructions || '')}</p></div></section>
-  <section class="sec" id="faq"><div class="sec-in" style="max-width:780px"><h2 class="rv">Frequently asked questions</h2><div class="faq">${FAQ.map(([q, a]) => `<details class="card rv"><summary>${q}</summary><p class="mut">${a}</p></details>`).join('')}</div></div></section>
-  <section class="sec alt" id="contact"><div class="sec-in"><div class="grid g2" style="align-items:start"><div class="rv"><h2 style="text-align:left">Book a demo or ask us anything</h2><p class="mut">Tell us about your school and we will show you how ${esc(CFG.brand)} works with your own exams.</p>
-  ${CFG.contactEmail ? `<p>${ico('mail')} <a href="mailto:${esc(CFG.contactEmail)}">${esc(CFG.contactEmail)}</a></p>` : ''}${CFG.contactPhone ? `<p>${ico('phone')} ${esc(CFG.contactPhone)}</p>` : ''}</div>
-  <form id="contact" class="card pad rv"><label>School name<input name="school_name" maxlength="120"></label><label>Your name<input name="contact_name" maxlength="80" required></label>
-  <div class="grid g2" style="gap:0 14px"><label>Email<input name="email" type="email" maxlength="120"></label><label>Phone<input name="phone" maxlength="40"></label></div>
-  <label>Message<textarea name="message" maxlength="2000" style="min-height:90px" placeholder="How many students and teachers do you have?"></textarea></label><button class="btn pri block">Send message</button></form></div></div></section>
-  <section class="sec"><div class="sec-in"><div class="cta-in rv"><h2 style="margin-bottom:8px">Give your teachers a better way to run exams</h2><p style="opacity:.9">Start your free trial today. No card, no installation.</p><a class="btn inv" href="#/signup">Start free trial</a></div></div></section>
-  <footer class="sitefoot"><div class="row between"><b>${esc(CFG.brand)}</b><div class="row"><button class="btn ghost sm" data-act="scroll" data-to="pricing">Pricing</button><a class="btn ghost sm" href="#/signup">Free trial</a><a class="btn ghost sm" href="/admin">School sign in</a><a class="btn ghost sm" href="/terms.html">Terms</a><a class="btn ghost sm" href="/privacy.html">Privacy</a></div></div></footer></main>`;
-  $('#contact').onsubmit = (e) => {
-    e.preventDefault();
-    const f = Object.fromEntries(new FormData(e.target));
-    busy($('button', e.target), async () => { await api('/api/public/contact', { method: 'POST', body: f }); e.target.reset(); toast('Thank you. We will contact you soon.'); });
-  };
+  <section class="band"><div class="band-in">${[['key', 'One shared code'], ['clock', 'Server-side timer'], ['bolt', 'Instant marking'], ['phone', 'Phone friendly']].map(([i, t]) => `<div class="rv"><span class="fi">${ico(i)}</span><b>${t}</b></div>`).join('')}</div></section>
+  <section class="sec" id="features"><div class="sec-in"><h2 class="rv">Everything you need to sit an exam with confidence</h2><p class="mut rv">A calm, distraction-free exam room that works the same on every device.</p><div class="grid g3">${FEATS.map(card).join('')}</div></div></section>
+  <section class="sec alt" id="how"><div class="sec-in"><h2 class="rv">Three steps to finish your exam</h2><p class="mut rv">From code to score in a few minutes.</p><div class="grid g3">${[['Get your code', 'Your teacher gives the whole class one exam code, on the board or in a message.'], ['Enter your name', 'Type your full name and the code, read the instructions, then press start.'], ['Answer and submit', 'Work through the questions, review your answers and submit to see your results straight away.']].map(([t, d], k) => `<article class="card feat step rv" style="--d:${k * 90}ms"><span class="num">${k + 1}</span><h3>${t}</h3><p class="mut" style="margin:0">${d}</p></article>`).join('')}</div></div></section>
+  <section class="sec" id="teachers"><div class="sec-in"><h2 class="rv">Built for schools and teachers</h2><p class="mut rv">Create exams, share one code, and let the system do the marking.</p><div class="grid g3">${TEACH.map(card).join('')}</div></div></section>
+  <section class="sec alt" id="faq"><div class="sec-in" style="max-width:780px"><h2 class="rv">Frequently asked questions</h2><div class="faq">${FAQ.map(([q, a]) => `<details class="card rv"><summary>${q}</summary><p class="mut">${a}</p></details>`).join('')}</div></div></section>
+  <section class="sec"><div class="sec-in"><div class="cta-in rv"><h2 style="margin-bottom:8px">Ready when you are</h2><p style="opacity:.9">Have your name and exam code to hand, then take the exam.</p><button class="btn inv" data-act="scroll" data-to="top">Enter exam code</button></div></div></section></main>`;
   $('#join').onsubmit = (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
     busy($('button', e.target), async () => {
       const i = await api('/api/student/lookup', { method: 'POST', body: f });
-      modal(`<h3>${esc(i.title)}</h3><p class="mut">${esc(i.subject)}${i.school ? ` · ${esc(i.school)}` : ''}</p>
+      modal(`<h3>${esc(i.title)}</h3><p class="mut">${esc(i.subject)}</p>
         <div class="grid g2" style="margin:12px 0"><div class="card stat"><b>${i.duration}</b><span>minutes</span></div><div class="card stat"><b>${i.questions}</b><span>questions · ${num(i.total)} marks</span></div></div>
         ${i.instructions ? `<h3>Instructions</h3><p style="white-space:pre-wrap">${esc(i.instructions)}</p>` : ''}
         ${i.lockdown ? `<div class="card pad sm" style="border-left:5px solid var(--warn);margin-bottom:12px"><b>Secure exam mode</b><ul style="margin:6px 0 0;padding-left:18px"><li>The exam runs in full screen.</li><li>Switching tabs or windows, or leaving full screen, is recorded and shown to your teacher.</li><li>${i.maxViolations ? `After ${i.maxViolations} violations your exam is submitted automatically.` : 'Violations are recorded for your teacher.'}</li><li>Copying, pasting and right-click are disabled.</li></ul></div>` : ''}
@@ -186,7 +167,7 @@ async function viewExam() {
   S = { ...d, i: 0, deadline: Date.now() + d.remaining, busy: false, t: {} };
   window.onbeforeunload = (e) => { e.preventDefault(); e.returnValue = ''; };
   app.innerHTML = head(`<span class="mut sm">${esc(S.name)}</span><span class="timer" id="timer">--:--</span>`) + `
-  <main class="wrap"><div class="row between" style="margin-bottom:12px"><div><h3 style="margin:0">${esc(S.exam.title)}</h3><span class="mut sm">${esc(S.exam.subject)}${S.exam.school ? ` · ${esc(S.exam.school)}` : ''}</span></div><span class="sm mut" id="saved"></span></div>
+  <main class="wrap"><div class="row between" style="margin-bottom:12px"><div><h3 style="margin:0">${esc(S.exam.title)}</h3><span class="mut sm">${esc(S.exam.subject)}</span></div><span class="sm mut" id="saved"></span></div>
   <div class="bar" style="margin-bottom:18px"><i id="prog" style="width:0"></i></div>
   <div class="exam"><section class="card pad q" id="qbox"></section>
   <aside class="card pad"><h3>Questions</h3><div class="qnav" id="qnav"></div><p class="sm mut" id="count" style="margin:14px 0"></p><button class="btn pri block" data-act="review">Review and submit</button></aside></div></main>`;
@@ -361,158 +342,32 @@ actions.done = () => { localStorage.removeItem('attemptToken'); S = null; locati
 
 /* ---------- admin: shell, login ---------- */
 function viewLogin() {
-  app.innerHTML = head('<a class="btn ghost sm" href="/">Student portal</a>') + `<main class="wrap" style="max-width:440px;margin-top:6vh"><form id="login" class="card pad fade"><h2>School sign in</h2><p class="mut">Teachers, school administrators and the platform owner sign in here.</p>
+  app.innerHTML = head('<a class="btn ghost sm" href="/">Student portal</a>') + `<main class="wrap" style="max-width:440px;margin-top:6vh"><form id="login" class="card pad fade"><h2>Admin sign in</h2><p class="mut">Manage exams and review results.</p>
   <label>Username<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label>
-  <button class="btn pri block">Sign in</button><p class="sm mut" style="margin:14px 0 0">New school? <a href="/#/signup">Start a free trial</a></p></form></main>`;
+  <button class="btn pri block">Sign in</button></form></main>`;
   $('#login').onsubmit = (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
     busy($('button', e.target), async () => { const r = await api('/api/admin/login', { method: 'POST', body: f }); localStorage.setItem('adminToken', r.token); location.hash = '#/admin/dashboard'; route(); });
   };
 }
-const tabs = () => {
-  if (!ME) return [];
-  if (ME.role === 'superadmin') return [['platform', 'Overview'], ['schools', 'Schools'], ['payments', 'Payments'], ['leads', 'Leads']];
-  return [['dashboard', 'Dashboard'], ['exams', 'Exams'], ['live', 'Live monitor'], ['results', 'Results'], ...(ME.role === 'school_admin' ? [['teachers', 'Teachers'], ['billing', 'Billing']] : [])];
-};
+const tabs = () => [['dashboard', 'Dashboard'], ['exams', 'Exams'], ['live', 'Live monitor'], ['results', 'Results'], ...(ME && ME.role === 'superadmin' ? [['teachers', 'Teachers']] : [])];
 function adminShell(active, inner) {
-  app.innerHTML = head(`<span class="sm mut hide-sm">${esc((ME && ME.school ? ME.school.name + ' · ' : '') + ((ME && (ME.name || ME.username)) || ''))}</span><button class="btn ghost sm" data-act="logout">Log out</button>`) +
-    `<nav class="tabs">${tabs().map(([k, l]) => `<a href="#/admin/${k}" class="${k === active ? 'on' : ''}">${l}</a>`).join('')}</nav>${banner()}<main class="wrap fade">${inner}</main>`;
+  app.innerHTML = head(`<span class="sm mut hide-sm">${esc((ME && (ME.name || ME.username)) || '')}</span><button class="btn ghost sm" data-act="logout">Log out</button>`) +
+    `<nav class="tabs">${tabs().map(([k, l]) => `<a href="#/admin/${k}" class="${k === active ? 'on' : ''}">${l}</a>`).join('')}</nav><main class="wrap fade">${inner}</main>`;
 }
 actions.logout = () => { localStorage.removeItem('adminToken'); ME = null; location.hash = '#/admin'; route(); };
 actions.pw = () => modal(`<h3>Change password</h3><label>Current password<input id="op" type="password" autocomplete="current-password"></label><label>New password (at least 8 characters)<input id="np" type="password" autocomplete="new-password"></label><div class="row end"><button class="btn ghost" data-act="mclose">Cancel</button><button class="btn pri" data-act="savepw">Update password</button></div>`);
 actions.savepw = (b) => busy(b, async () => { await api('/api/admin/password', { method: 'POST', as: 'admin', body: { oldPassword: $('#op').value, newPassword: $('#np').value } }); closeModal(); toast('Password updated'); });
 
-/* ---------- public sign-up ---------- */
-function viewSignup() {
-  app.innerHTML = head('<a class="btn ghost sm" href="/admin">School sign in</a>') + `<main class="wrap" style="max-width:540px;margin-top:4vh"><form id="su" class="card pad fade"><h2>Start your free trial</h2><p class="mut">${CFG.trialDays} days, no payment card. Create your school account, then add your teachers.</p>
-  <label>School name<input name="school_name" maxlength="120" required></label><label>Your name<input name="admin_name" maxlength="80" autocomplete="name" required></label>
-  <label>Email (this is your username)<input name="email" type="email" maxlength="120" autocomplete="email" required></label><label>Phone (optional)<input name="phone" maxlength="40" autocomplete="tel"></label>
-  <label>Password (at least 8 characters)<input name="password" type="password" minlength="8" autocomplete="new-password" required></label>
-  <button class="btn pri block">Create school account</button><p class="sm mut" style="margin:14px 0 0">Already registered? <a href="/admin">Sign in</a></p></form></main>`;
-  $('#su').onsubmit = (e) => {
-    e.preventDefault();
-    const f = Object.fromEntries(new FormData(e.target));
-    busy($('button', e.target), async () => { const r = await api('/api/public/signup', { method: 'POST', body: f }); localStorage.setItem('adminToken', r.token); ME = null; location.assign('/admin'); });
-  };
-}
-
-/* ---------- admin: subscription banner ---------- */
-function banner() {
-  const s = ME && ME.school;
-  if (!s) return '';
-  const link = ME.role === 'school_admin' ? ' <a href="#/admin/billing"><b>Open billing</b></a>' : ' Please ask your school administrator.';
-  if (!s.active) return `<div class="banner bad">${s.state === 'suspended' ? 'This school account is suspended.' : 'Your subscription has ended. Exams cannot be created, published or started until it is renewed.'}${link}</div>`;
-  if (s.status === 'trial' && s.daysLeft <= 5) return `<div class="banner warn">Your free trial ends in ${s.daysLeft} day${s.daysLeft === 1 ? '' : 's'}.${link}</div>`;
-  if (s.status === 'active' && s.daysLeft <= 7) return `<div class="banner warn">Your subscription ends in ${s.daysLeft} day${s.daysLeft === 1 ? '' : 's'}.${link}</div>`;
-  return '';
-}
-
-/* ---------- platform owner: overview, schools, payments, leads ---------- */
-const fmtMoney = (n, c) => `${Number(n).toLocaleString()} ${c || CFG.currency}`;
-async function viewPlatform() {
-  adminShell('platform', LOAD);
-  const s = await api('/api/admin/platform', { as: 'admin' });
-  $('main').innerHTML = `<div class="row between" style="margin-bottom:16px"><div><h2 style="margin:0">Platform overview</h2><p class="mut" style="margin:0">Your schools, subscriptions and enquiries.</p></div><button class="btn" data-act="pw">Change password</button></div>
-  <div class="grid g4">${[['Schools', s.schools], ['Active trials', s.trials], ['Paying schools', s.paying], ['Expired', s.expired], ['Suspended', s.suspended], ['Teachers', s.teachers], ['Student exams this month', s.attemptsMonth], ['Revenue this month', fmtMoney(s.revenueMonth, s.currency)], ['Pending payments', s.pendingPayments], ['New leads', s.newLeads]].map(([l, v]) => `<div class="card stat"><b>${v}</b><span>${l}</span></div>`).join('')}</div>
-  ${s.pendingPayments ? '<p style="margin-top:18px"><a class="btn pri" href="#/admin/payments">Review pending payments</a></p>' : ''}`;
-}
-let SCH = [];
-const sBadge = (s) => `<span class="badge ${s.state === 'active' ? 'Pass' : s.state === 'trial' ? 'pending' : 'Fail'}">${{ trial: 'Trial', active: 'Active', suspended: 'Suspended', expired: 'Expired' }[s.state] || s.state}</span>`;
-const planOptions = (sel) => CFG.plans.map((p) => `<option value="${p.key}" ${p.key === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
-async function viewSchools() {
-  adminShell('schools', LOAD);
-  SCH = await api('/api/admin/schools', { as: 'admin' });
-  $('main').innerHTML = `<div class="row between" style="margin-bottom:14px"><h2 style="margin:0">Schools</h2><button class="btn pri" data-act="adds">Add school</button></div>` + (SCH.length
-    ? `<div class="card scroll"><table><thead><tr><th>School</th><th>Plan</th><th>Status</th><th>Ends</th><th>Teachers</th><th>Exams</th><th>Student exams (month)</th><th>Administrator</th><th></th></tr></thead><tbody>${SCH.map((s) => `<tr><td><b>${esc(s.name)}</b><br><span class="sm mut">Joined ${fmtDate(s.created_at)}</span></td><td>${esc(s.planName)}</td><td>${sBadge(s)}</td><td>${s.endsAt ? `${fmtDate(s.endsAt)} (${s.daysLeft}d)` : '—'}</td><td>${s.teachers}</td><td>${s.exams}</td><td>${s.attempts_month}</td><td>${esc(s.admin_username || '—')}</td><td class="right"><button class="btn sm" data-act="msch" data-id="${s.id}">Manage</button></td></tr>`).join('')}</tbody></table></div>`
-    : '<div class="card empty"><h3>No schools yet</h3><p>Schools appear here when they sign up. You can also add one yourself.</p></div>');
-}
-actions.adds = () => modal(`<h3>Add a school</h3><div class="grid g2"><label>School name<input id="sn" maxlength="120"></label><label>Administrator name<input id="sa" maxlength="80"></label>
-  <label>Administrator username or email<input id="su2" maxlength="80" autocomplete="off"></label><label>Temporary password<input id="sp" value="${randomPw()}" autocomplete="off"></label>
-  <label>Plan<select id="spl">${planOptions('trial')}</select></label><label>Months paid (paid plans)<input id="smo" type="number" min="1" max="36" value="1"></label></div>
-  <div class="row end"><button class="btn ghost" data-act="mclose">Cancel</button><button class="btn pri" data-act="saves">Create school</button></div>`, true);
-actions.saves = (b) => busy(b, async () => {
-  await api('/api/admin/schools', { method: 'POST', as: 'admin', body: { school_name: $('#sn').value, admin_name: $('#sa').value, username: $('#su2').value, password: $('#sp').value, plan: $('#spl').value, months: +$('#smo').value } });
-  closeModal(); toast('School created. Share the username and password with the administrator.'); route();
-});
-actions.msch = (b) => {
-  const s = SCH.find((x) => x.id === +b.dataset.id);
-  modal(`<h3>${esc(s.name)}</h3><p class="sm mut">Administrator: ${esc(s.admin_username || 'none yet')} · ${sBadge(s)}${s.endsAt ? ` · ends ${fmtDate(s.endsAt)}` : ''}</p>
-  <div class="grid g2"><label>School name<input id="mn" value="${esc(s.name)}" maxlength="120"></label><label>Plan<select id="mp">${planOptions(s.plan)}</select></label>
-  <label>Status<select id="ms"><option value="trial" ${s.status === 'trial' ? 'selected' : ''}>Trial</option><option value="active" ${s.status === 'active' ? 'selected' : ''}>Active (paid)</option><option value="suspended" ${s.status === 'suspended' ? 'selected' : ''}>Suspended</option></select></label>
-  <label>Extend by (days)<input id="me" type="number" min="0" max="3650" value="0"></label></div>
-  <div class="row between"><div class="row"><button class="btn sm" data-act="addadm" data-id="${s.id}">Add administrator</button><button class="btn sm danger" data-act="delsch" data-id="${s.id}" data-n="${esc(s.name)}">Delete</button></div>
-  <div class="row"><button class="btn ghost" data-act="mclose">Cancel</button><button class="btn pri" data-act="savem" data-id="${s.id}">Save</button></div></div>`, true);
-};
-actions.savem = (b) => busy(b, async () => {
-  await api(`/api/admin/schools/${b.dataset.id}`, { method: 'PUT', as: 'admin', body: { name: $('#mn').value, plan: $('#mp').value, status: $('#ms').value, extendDays: +$('#me').value || 0 } });
-  closeModal(); toast('School updated'); route();
-});
-actions.addadm = (b) => modal(`<h3>Add a school administrator</h3><label>Name<input id="an" maxlength="80"></label><label>Username or email<input id="au" maxlength="80" autocomplete="off"></label><label>Temporary password<input id="ap" value="${randomPw()}" autocomplete="off"></label>
-  <div class="row end"><button class="btn ghost" data-act="mclose">Cancel</button><button class="btn pri" data-act="saveadm" data-id="${b.dataset.id}">Create account</button></div>`);
-actions.saveadm = (b) => busy(b, async () => {
-  await api(`/api/admin/schools/${b.dataset.id}/admin`, { method: 'POST', as: 'admin', body: { name: $('#an').value, username: $('#au').value, password: $('#ap').value } });
-  closeModal(); toast('Administrator account created'); route();
-});
-actions.delsch = async (b) => {
-  if (await confirmBox('Delete this school?', `"${b.dataset.n}" and its accounts will be removed. A school that has exams cannot be deleted. Suspend it instead.`, 'Delete school', true))
-    busy(b, async () => { await api(`/api/admin/schools/${b.dataset.id}`, { method: 'DELETE', as: 'admin' }); toast('School deleted'); route(); });
-};
-async function viewPayments() {
-  adminShell('payments', LOAD);
-  const rows = await api('/api/admin/payments', { as: 'admin' });
-  $('main').innerHTML = `<h2 style="margin-bottom:14px">Payments</h2>` + (rows.length
-    ? `<div class="card scroll"><table><thead><tr><th>Date</th><th>School</th><th>Plan</th><th>Months</th><th>Amount</th><th>Reference</th><th>Status</th><th></th></tr></thead><tbody>${rows.map((p) => `<tr><td>${fmtDate(p.created_at)}</td><td><b>${esc(p.school_name)}</b></td><td>${esc((CFG.plans.find((x) => x.key === p.plan) || {}).name || p.plan)}</td><td>${p.months}</td><td>${fmtMoney(p.amount)}</td><td>${esc(p.reference)}</td><td><span class="badge ${p.status === 'approved' ? 'Pass' : p.status === 'rejected' ? 'Fail' : 'pending'}">${p.status}</span></td><td class="right">${p.status === 'pending' ? `<button class="btn sm pri" data-act="payok" data-id="${p.id}">Approve</button> <button class="btn sm ghost" data-act="payno" data-id="${p.id}">Reject</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`
-    : '<div class="card empty"><p>No payment requests yet. They appear here when a school requests a plan.</p></div>');
-}
-actions.payok = async (b) => { if (await confirmBox('Approve this payment?', 'Check that the money has arrived. The school\'s plan is activated immediately.', 'Approve')) busy(b, async () => { await api(`/api/admin/payments/${b.dataset.id}`, { method: 'PUT', as: 'admin', body: { action: 'approve' } }); toast('Payment approved. Plan activated.'); route(); }); };
-actions.payno = async (b) => { if (await confirmBox('Reject this payment?', 'The school is not charged or upgraded.', 'Reject', true)) busy(b, async () => { await api(`/api/admin/payments/${b.dataset.id}`, { method: 'PUT', as: 'admin', body: { action: 'reject' } }); toast('Payment rejected'); route(); }); };
-async function viewLeads() {
-  adminShell('leads', LOAD);
-  const rows = await api('/api/admin/leads', { as: 'admin' });
-  $('main').innerHTML = `<h2 style="margin-bottom:14px">Leads</h2>` + (rows.length
-    ? `<div class="card scroll"><table><thead><tr><th>Date</th><th>School</th><th>Contact</th><th>Message</th><th>Status</th><th></th></tr></thead><tbody>${rows.map((l) => `<tr><td>${fmtDate(l.created_at)}</td><td>${esc(l.school_name || '—')}</td><td><b>${esc(l.contact_name)}</b><br><span class="sm mut">${esc(l.email)} ${esc(l.phone)}</span></td><td style="white-space:normal;min-width:220px">${esc(l.message)}</td><td><span class="badge ${l.status === 'new' ? 'pending' : l.status === 'closed' ? '' : 'Pass'}">${l.status}</span></td><td class="right">${l.status !== 'contacted' ? `<button class="btn sm" data-act="leadst" data-id="${l.id}" data-s="contacted">Contacted</button> ` : ''}${l.status !== 'closed' ? `<button class="btn sm ghost" data-act="leadst" data-id="${l.id}" data-s="closed">Close</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`
-    : '<div class="card empty"><p>No enquiries yet. Messages from the website contact form appear here.</p></div>');
-}
-actions.leadst = (b) => busy(b, async () => { await api(`/api/admin/leads/${b.dataset.id}`, { method: 'PUT', as: 'admin', body: { status: b.dataset.s } }); route(); });
-
-/* ---------- school administrator: billing ---------- */
-async function viewBilling() {
-  adminShell('billing', LOAD);
-  const b = await api('/api/admin/billing', { as: 'admin' });
-  BILL = b;
-  const s = b.school, u = b.usage, l = b.limits;
-  const meter = (label, used, max) => `<div style="margin-bottom:12px"><div class="row between sm"><span>${label}</span><b>${Number(used).toLocaleString()} / ${Number(max).toLocaleString()}</b></div><div class="bar"><i style="width:${Math.min(100, max ? (used / max) * 100 : 0)}%"></i></div></div>`;
-  const planCard = (p) => `<article class="card plan ${p.key === s.plan && s.status === 'active' ? 'pop' : ''}"><h3>${esc(p.name)}</h3><div class="price"><b>${Number(p.price).toLocaleString()}</b><span> ${b.currency} / month</span></div>
-    <ul><li>Up to <b>${p.maxTeachers}</b> teachers</li><li>Up to <b>${p.maxExams}</b> exams</li><li><b>${Number(p.maxAttemptsPerMonth).toLocaleString()}</b> student exams per month</li></ul><button class="btn ${p.key === s.plan && s.status === 'active' ? '' : 'pri'} block" data-act="reqplan" data-p="${p.key}">${p.key === s.plan && s.status === 'active' ? 'Renew this plan' : 'Choose this plan'}</button></article>`;
-  $('main').innerHTML = `<h2 style="margin-bottom:14px">Billing</h2>
-  <div class="grid g2"><div class="card pad">${sBadge(s)}<h3 style="margin:8px 0 4px">${esc(s.planName)} plan</h3><p class="mut">${s.active ? `${s.status === 'trial' ? 'Your free trial ends' : 'Your subscription ends'} on ${fmtDate(s.endsAt)} (${s.daysLeft} days left).` : 'Your subscription is not active. Choose a plan below to renew.'}</p>
-  ${meter('Teachers', u.teachers, l.maxTeachers)}${meter('Exams', u.exams, l.maxExams)}${meter('Student exams this month', u.attemptsMonth, l.maxAttemptsPerMonth)}</div>
-  <div class="card pad"><h3>How to pay</h3><p class="mut">${esc(b.instructions)}</p><p class="sm mut">Choose a plan below, pay, then enter the payment reference. We activate your plan as soon as the payment is confirmed. Paying for 12 months costs ${b.annualMonthsPaid} months.</p></div></div>
-  <h3 style="margin:26px 0 12px">Choose a plan</h3><div class="pricegrid">${b.plans.filter((p) => p.key !== 'trial').map(planCard).join('')}</div>
-  <h3 style="margin:26px 0 12px">Payment requests</h3>${b.payments.length ? `<div class="card scroll"><table><thead><tr><th>Date</th><th>Plan</th><th>Months</th><th>Amount</th><th>Reference</th><th>Status</th></tr></thead><tbody>${b.payments.map((p) => `<tr><td>${fmtDate(p.created_at)}</td><td>${esc((b.plans.find((x) => x.key === p.plan) || {}).name || p.plan)}</td><td>${p.months}</td><td>${fmtMoney(p.amount, b.currency)}</td><td>${esc(p.reference)}</td><td><span class="badge ${p.status === 'approved' ? 'Pass' : p.status === 'rejected' ? 'Fail' : 'pending'}">${p.status}</span></td></tr>`).join('')}</tbody></table></div>` : '<div class="card empty"><p>No payment requests yet.</p></div>'}`;
-}
-let BILL = null;
-actions.reqplan = (b) => {
-  const p = BILL.plans.find((x) => x.key === b.dataset.p);
-  const opt = (m) => `<option value="${m}">${m} month${m > 1 ? 's' : ''} · ${fmtMoney(p.price * (m === 12 ? BILL.annualMonthsPaid : m), BILL.currency)}</option>`;
-  modal(`<h3>${esc(p.name)} plan</h3><p class="mut sm">${esc(BILL.instructions)}</p><label>Period<select id="rm">${[1, 3, 6, 12].map(opt).join('')}</select></label>
-  <label>Payment reference (transaction number)<input id="rr" maxlength="120" placeholder="e.g. bank or mobile money reference"></label>
-  <div class="row end"><button class="btn ghost" data-act="mclose">Cancel</button><button class="btn pri" data-act="sendreq" data-p="${p.key}">Submit payment request</button></div>`);
-};
-actions.sendreq = (b) => busy(b, async () => {
-  await api('/api/admin/billing/request', { method: 'POST', as: 'admin', body: { plan: b.dataset.p, months: +$('#rm').value, reference: $('#rr').value } });
-  closeModal(); toast('Request sent. We will activate your plan once the payment is confirmed.'); route();
-});
-
-/* ---------- admin: teacher accounts (school administrator) ---------- */
+/* ---------- admin: teacher accounts (main administrator only) ---------- */
 const randomPw = () => { const c = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789'; const a = new Uint32Array(10); crypto.getRandomValues(a); return [...a].map((x) => c[x % c.length]).join(''); };
 async function viewTeachers() {
   adminShell('teachers', LOAD);
   const list = await api('/api/admin/teachers', { as: 'admin' });
   $('main').innerHTML = `<div class="row between" style="margin-bottom:14px"><div><h2 style="margin:0">Teachers</h2><p class="mut" style="margin:0">Each teacher signs in at /admin and sees only their own exams and results.</p></div><button class="btn pri" data-act="addt">Add teacher</button></div>
-  <div class="card scroll"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Exams</th><th>Status</th><th></th></tr></thead><tbody>${list.map((t) => `<tr><td><b>${esc(t.name || '—')}</b></td><td>${esc(t.username)}</td><td>${t.role === 'school_admin' ? 'School admin' : 'Teacher'}</td><td>${t.exams}</td><td><span class="badge ${t.disabled ? 'Fail' : 'Pass'}">${t.disabled ? 'Disabled' : 'Active'}</span></td>
-  <td class="right">${t.role === 'school_admin' ? '' : `<button class="btn sm" data-act="resett" data-id="${t.id}" data-u="${esc(t.username)}">Reset password</button> <button class="btn sm" data-act="togglet" data-id="${t.id}" data-on="${t.disabled ? 0 : 1}">${t.disabled ? 'Enable' : 'Disable'}</button> <button class="btn sm danger" data-act="delt" data-id="${t.id}" data-u="${esc(t.username)}">Delete</button>`}</td></tr>`).join('')}</tbody></table></div>
+  <div class="card scroll"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Exams</th><th>Status</th><th></th></tr></thead><tbody>${list.map((t) => `<tr><td><b>${esc(t.name || '—')}</b></td><td>${esc(t.username)}</td><td>${t.role === 'superadmin' ? 'Main admin' : 'Teacher'}</td><td>${t.exams}</td><td><span class="badge ${t.disabled ? 'Fail' : 'Pass'}">${t.disabled ? 'Disabled' : 'Active'}</span></td>
+  <td class="right">${t.role === 'superadmin' ? '' : `<button class="btn sm" data-act="resett" data-id="${t.id}" data-u="${esc(t.username)}">Reset password</button> <button class="btn sm" data-act="togglet" data-id="${t.id}" data-on="${t.disabled ? 0 : 1}">${t.disabled ? 'Enable' : 'Disable'}</button> <button class="btn sm danger" data-act="delt" data-id="${t.id}" data-u="${esc(t.username)}">Delete</button>`}</td></tr>`).join('')}</tbody></table></div>
   <p class="sm mut" style="margin-top:14px">Teachers cannot see each other's exams, students or results, and neither can you. Disable an account to block sign-in without losing the teacher's data. An account can only be deleted when the teacher owns no exams.</p>`;
 }
 actions.addt = () => modal(`<h3>Add a teacher</h3>
@@ -822,21 +677,13 @@ async function route() {
   if (onAdmin && p[0] !== 'admin') p = ['admin'];
   if (!onAdmin && p[0] === 'admin') { location.replace('/admin' + (p[1] ? '#/admin/' + p.slice(1).join('/') : '')); return; }
   try {
-    if (p[0] === 'signup') return viewSignup();
     if (p[0] === 'exam') return await viewExam();
     if (p[0] === 'result') return await viewResult();
     if (p[0] === 'admin') {
       if (!tok()) return viewLogin();
       if (!ME) ME = await api('/api/admin/me', { as: 'admin' });
-      const owner = ME.role === 'superadmin', head1 = ME.role === 'school_admin';
-      let v = p[1] || (owner ? 'platform' : 'dashboard');
-      if (owner && v === 'dashboard') v = 'platform';
-      if (v === 'platform') return owner ? await viewPlatform() : await viewDash();
-      if (v === 'schools') return owner ? await viewSchools() : await viewDash();
-      if (v === 'payments') return owner ? await viewPayments() : await viewDash();
-      if (v === 'leads') return owner ? await viewLeads() : await viewDash();
-      if (v === 'billing') return head1 ? await viewBilling() : await viewDash();
-      if (v === 'teachers') return head1 ? await viewTeachers() : await viewDash();
+      const v = p[1] || 'dashboard';
+      if (v === 'teachers') return ME.role === 'superadmin' ? await viewTeachers() : await viewDash();
       if (v === 'exams') return await viewExams();
       if (v === 'exam') return await viewEditor(p[2] || 'new');
       if (v === 'live') return await viewLive();
@@ -850,5 +697,5 @@ async function route() {
   }
 }
 addEventListener('hashchange', route);
-loadCfg().then(route);
+route();
 })();
