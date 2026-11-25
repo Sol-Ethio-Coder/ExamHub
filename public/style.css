@@ -98,3 +98,12 @@ details summary{cursor:pointer}code{background:var(--soft);padding:1px 6px;borde
 .lockbox{max-width:480px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px;text-align:center;box-shadow:var(--sh)}
 .lockdown .q{user-select:none;-webkit-user-select:none}.lockdown .q textarea{user-select:text;-webkit-user-select:text}
 @media print{.lockdown #app{display:none!important}}
+/* business site */
+.eyebrow{display:inline-block;margin:0 0 10px;padding:4px 12px;border-radius:99px;background:color-mix(in srgb,var(--pri) 12%,transparent);color:var(--pri);font-weight:700;font-size:.8rem;letter-spacing:.04em;text-transform:uppercase}
+.pricegrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr));gap:16px;align-items:stretch}
+.plan{position:relative;padding:24px;display:flex;flex-direction:column;gap:10px}.plan.pop{border:2px solid var(--pri);box-shadow:var(--sh)}
+.plan .pill{position:absolute;top:-12px;right:16px}.price b{font:700 2.1rem var(--serif)}.price span{color:var(--mut);font-size:.85rem}
+.plan ul{list-style:none;margin:6px 0 10px;padding:0;display:grid;gap:7px;flex:1}.plan li{padding-left:24px;position:relative;font-size:.92rem}
+.plan li::before{content:"";position:absolute;left:2px;top:.45em;width:12px;height:7px;border-left:2.5px solid var(--ok);border-bottom:2.5px solid var(--ok);transform:rotate(-45deg)}
+.banner{padding:10px clamp(14px,4vw,32px);font-weight:600;font-size:.92rem}.banner.warn{background:color-mix(in srgb,var(--warn) 18%,var(--card));color:var(--ink)}.banner.bad{background:color-mix(in srgb,var(--mark) 18%,var(--card));color:var(--ink)}
+.sitefoot{max-width:1120px;margin:0 auto;padding:24px clamp(14px,4vw,32px);border-top:1px solid var(--line)}

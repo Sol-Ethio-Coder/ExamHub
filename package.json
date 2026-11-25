@@ -1,6 +1,6 @@
 {
   "name": "examhub",
-  "version": "2.2.0",
+  "version": "3.0.0",
   "description": "Online Examination System for schools. Express + Turso (libSQL). Runs locally, on Vercel or on Netlify.",
   "main": "server.js",
   "scripts": { "start": "node server.js", "dev": "node --watch server.js" },
